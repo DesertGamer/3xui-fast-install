@@ -1,0 +1,180 @@
+# shellcheck source=steps/_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/_lib.sh"
+
+info "Шаг 6/7: Запуск 3x-ui (Docker)..."
+
+mkdir -p "${XUI_DIR}/db" "${XUI_DIR}/cert"
+
+# ── docker-compose.yml ───────────────────────────────────────────────────────
+cat > "${XUI_DIR}/docker-compose.yml" <<EOF
+services:
+  3xui:
+    image: ghcr.io/mhsanaei/3x-ui:latest
+    container_name: 3xui_app
+    hostname: ${DOMAIN}
+    volumes:
+      - ${XUI_DIR}/db/:/etc/x-ui/
+      - ${XUI_DIR}/cert/:/root/cert/
+    environment:
+      XRAY_VMESS_AEAD_FORCED: "false"
+      XUI_ENABLE_FAIL2BAN: "true"
+    tty: true
+    network_mode: host
+    restart: unless-stopped
+EOF
+
+# ── Запуск контейнера ────────────────────────────────────────────────────────
+docker compose -f "${XUI_DIR}/docker-compose.yml" pull \
+    || die "Не удалось скачать образ 3x-ui."
+docker compose -f "${XUI_DIR}/docker-compose.yml" up -d \
+    || die "Не удалось запустить контейнер 3x-ui."
+
+# Ждём появления БД (до 30 сек)
+XUI_DB="${XUI_DIR}/db/x-ui.db"
+for i in $(seq 1 30); do
+    [[ -f "$XUI_DB" ]] && break
+    sleep 1
+done
+[[ -f "$XUI_DB" ]] || die "БД x-ui не появилась в ${XUI_DB} за 30 секунд."
+
+# ── Reality-ключи (через exec в уже запущенный контейнер) ────────────────────
+_xray_bin=/app/bin/xray-linux-amd64
+
+REALITY_KEYS=""
+for i in $(seq 1 10); do
+    REALITY_KEYS=$(docker exec 3xui_app "$_xray_bin" x25519 2>/dev/null || true)
+    [[ "$REALITY_KEYS" == *"PrivateKey"* ]] && break
+    REALITY_KEYS=""
+    sleep 2
+done
+if [[ -z "$REALITY_KEYS" ]]; then
+    warn "Вывод xray x25519:"
+    docker exec 3xui_app "$_xray_bin" x25519 2>&1 || true
+    die "Не удалось сгенерировать Reality-ключи (xray x25519)."
+fi
+REALITY_PRIVATE=$(echo "$REALITY_KEYS" | awk '/PrivateKey:/ {print $2}' | tr -d '[:space:]')
+REALITY_PUBLIC=$(echo "$REALITY_KEYS"  | awk '/Password \(PublicKey\):/ {print $NF}' | tr -d '[:space:]')
+[[ -z "$REALITY_PRIVATE" ]] && die "Не удалось извлечь приватный ключ: $REALITY_KEYS"
+[[ -z "$REALITY_PUBLIC"  ]] && die "Не удалось извлечь публичный ключ: $REALITY_KEYS"
+info "Reality private: $REALITY_PRIVATE"
+info "Reality public:  $REALITY_PUBLIC"
+
+# Останавливаем для применения настроек
+docker compose -f "${XUI_DIR}/docker-compose.yml" stop
+
+# ── sqlite3 ──────────────────────────────────────────────────────────────────
+if ! command -v sqlite3 &>/dev/null; then
+    info "Устанавливаю sqlite3..."
+    apt-get update -qq && apt-get install -y -qq sqlite3
+    command -v sqlite3 &>/dev/null || die "sqlite3 не удалось установить."
+fi
+
+# ShortIds
+SIDS_JSON=""
+for n in 7 2 5 8 6 3 1 4; do
+    sid=$(openssl rand -hex "$n")
+    SIDS_JSON+="\"${sid}\", "
+done
+SIDS_JSON="[${SIDS_JSON%, }]"
+
+# ── Xray config ──────────────────────────────────────────────────────────────
+XRAY_CONFIG=$(cat <<__JSON__
+{
+  "log": {"access": "none", "dnsLog": false, "error": "./error.log", "loglevel": "warning"},
+  "api": {"tag": "api", "services": ["HandlerService", "LoggerService", "StatsService"]},
+  "inbounds": [{"tag": "api", "listen": "127.0.0.1", "port": $XRAY_API_PORT, "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1"}}],
+  "outbounds": [
+    {"tag": "blocked", "protocol": "blackhole", "settings": {}},
+    {"protocol": "socks", "settings": {"servers": [{"address": "127.0.0.1", "port": $WARP_PROXY_PORT, "users": []}]}, "tag": "warp"},
+    {"protocol": "socks", "settings": {"servers": [{"address": "127.0.0.1", "port": $OPERA_PROXY_PORT, "users": []}]}, "tag": "opera"},
+    {"protocol": "socks", "settings": {"servers": [{"address": "127.0.0.1", "port": $TOR_PORT, "users": []}]}, "tag": "tor"},
+    {"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "UseIPv4"}}
+  ],
+  "policy": {"levels": {"0": {"statsUserDownlink": true, "statsUserUplink": true}}, "system": {"statsInboundDownlink": true, "statsInboundUplink": true, "statsOutboundDownlink": true, "statsOutboundUplink": true}},
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {"type": "field", "inboundTag": ["api"], "outboundTag": "api"},
+      {"type": "field", "outboundTag": "blocked", "domain": ["geosite:category-ads-all", "ext:geosite_IR.dat:malware", "ext:geosite_IR.dat:phishing", "ext:geosite_IR.dat:cryptominers"]},
+      {"type": "field", "outboundTag": "warp", "domain": ["ext:geosite_RU.dat:ru-available-only-inside", "regexp:.*\\\\.ru\$", "regexp:.*\\\\.su\$", "regexp:.*\\\\.xn--p1ai\$", "domain:ntc.party"]},
+      {"type": "field", "ip": ["ext:geoip_RU.dat:ru"], "outboundTag": "warp"},
+      {"type": "field", "outboundTag": "tor", "domain": ["regexp:.*\\\\.onion\$", "domain:check.torproject.org"]},
+      {"type": "field", "outboundTag": "opera", "domain": ["geosite:disney", "geosite:reddit", "domain:disneyplus.com", "domain:reddit.com", "domain:redd.it", "domain:redditmedia.com", "domain:redditstatic.com", "domain:reddituploads.com"]},
+      {"type": "field", "outboundTag": "direct", "network": "tcp,udp"}
+    ]
+  },
+  "stats": {},
+  "dns": {"hosts": {"dns.google": ["8.8.8.8", "8.8.4.4"]}, "servers": [], "queryStrategy": "UseIP", "tag": "dns_inbound"},
+  "fakedns": null
+}
+__JSON__
+)
+
+REALITY_SETTINGS="\"show\":false,\"xver\":0,\"target\":\"127.0.0.1:9443\",\"serverNames\":[\"$DOMAIN\"],\"privateKey\":\"$REALITY_PRIVATE\",\"publicKey\":\"$REALITY_PUBLIC\",\"minClientVer\":\"\",\"maxClientVer\":\"\",\"maxTimediff\":0,\"shortIds\":$SIDS_JSON,\"settings\":{\"publicKey\":\"$REALITY_PUBLIC\",\"fingerprint\":\"chrome\",\"spiderX\":\"/\"}"
+INBOUND_STREAM="{\"network\":\"tcp\",\"security\":\"reality\",\"realitySettings\":{${REALITY_SETTINGS}},\"tcpSettings\":{\"acceptProxyProtocol\":false,\"header\":{\"type\":\"none\"}}}"
+
+ROUTING='happ://routing/onadd/eyJOYW1lIjoiUm9zY29tVlBOIiwiR2xvYmFsUHJveHkiOiJ0cnVlIiwiVXNlQ2h1bmtGaWxlcyI6InRydWUiLCJSZW1vdGVEbnMiOiI4LjguOC44IiwiRG9tZXN0aWNEbnMiOiI3Ny44OC44LjgiLCJSZW1vdGVETlNUeXBlIjoiRG9IIiwiUmVtb3RlRE5TRG9tYWluIjoiaHR0cHM6Ly84LjguOC44L2Rucy1xdWVyeSIsIlJlbW90ZUROU0lQIjoiOC44LjguOCIsIkRvbWVzdGljRE5TVHlwZSI6IkRvSCIsIkRvbWVzdGljRE5TRG9tYWluIjoiaHR0cHM6Ly83Ny44OC44LjgvZG5zLXF1ZXJ5IiwiRG9tZXN0aWNETlNJUCI6Ijc3Ljg4LjguOCIsIkdlb2lwdXJsIjoiaHR0cHM6Ly9jZG4uanNkZWxpdnIubmV0L2doL2h5ZHJhcG9uaXF1ZS9yb3Njb212cG4tZ2VvaXBAMjAyNjA0MjQwNTQyL3JlbGVhc2UvZ2VvaXAuZGF0IiwiR2Vvc2l0ZXVybCI6Imh0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldC9naC9oeWRyYXBvbmlxdWUvcm9zY29tdnBuLWdlb3NpdGVAMjAyNjA0MTUyMjM1L3JlbGVhc2UvZ2Vvc2l0ZS5kYXQiLCJMYXN0VXBkYXRlZCI6IjE3NzcwMDkzOTAiLCJEbnNIb3N0cyI6eyJsa2ZsMi5uYWxvZy5ydSI6IjIxMy4yNC42NC4xNzUiLCJsa25wZC5uYWxvZy5ydSI6IjIxMy4yNC42NC4xODEifSwiUm91dGVPcmRlciI6ImJsb2NrLXByb3h5LWRpcmVjdCIsIkRpcmVjdFNpdGVzIjpbImdlb3NpdGU6cHJpdmF0ZSIsImdlb3NpdGU6Y2F0ZWdvcnktcnUiLCJnZW9zaXRlOndoaXRlbGlzdCIsImdlb3NpdGU6bWljcm9zb2Z0IiwiZ2Vvc2l0ZTphcHBsZSIsImdlb3NpdGU6ZXBpY2dhbWVzIiwiZ2Vvc2l0ZTpyaW90IiwiZ2Vvc2l0ZTplc2NhcGVmcm9tdGFya292IiwiZ2Vvc2l0ZTpzdGVhbSIsImdlb3NpdGU6dHdpdGNoIiwiZ2Vvc2l0ZTpwaW50ZXJlc3QiLCJnZW9zaXRlOmZhY2VpdCJdLCJEaXJlY3RJcCI6WyJnZW9pcDpwcml2YXRlIiwiZ2VvaXA6ZGlyZWN0Il0sIlByb3h5U2l0ZXMiOlsiZ2Vvc2l0ZTpnb29nbGUtcGxheSIsImdlb3NpdGU6Z2l0aHViIiwiZ2Vvc2l0ZTp0d2l0Y2gtYWRzIiwiZ2Vvc2l0ZTp5b3V0dWJlIiwiZ2Vvc2l0ZTp0ZWxlZ3JhbSJdLCJQcm94eUlwIjpbXSwiQmxvY2tTaXRlcyI6WyJnZW9zaXRlOndpbi1zcHkiLCJnZW9zaXRlOnRvcnJlbnQiLCJnZW9zaXRlOmNhdGVnb3J5LWFkcyJdLCJCbG9ja0lwIjpbXSwiRG9tYWluU3RyYXRlZ3kiOiJJUElmTm9uTWF0Y2giLCJGYWtlRE5TIjoiZmFsc2UifQo='
+
+XRAY_CONFIG_1L=$(printf '%s' "$XRAY_CONFIG" | tr -d '\n')
+
+# ── Запись настроек в БД ─────────────────────────────────────────────────────
+xui_db_set() {
+    local key="$1"
+    local val="${2//\'/\'\'}"
+    sqlite3 "$XUI_DB" \
+        "DELETE FROM settings WHERE key='${key}'; INSERT INTO settings(key,value) VALUES('${key}','${val}');" \
+        || die "Ошибка записи '$key' в БД"
+}
+
+sqlite3 "$XUI_DB" "DELETE FROM settings WHERE rowid NOT IN (SELECT MAX(rowid) FROM settings GROUP BY key);"
+
+xui_db_set webPort            "$PANEL_PORT"
+xui_db_set webDomain          "$DOMAIN"
+xui_db_set webBasePath        "$PANEL_PATH"
+xui_db_set subPort            "$SUB_PORT"
+xui_db_set subDomain          "$DOMAIN"
+xui_db_set subEnable          "true"
+xui_db_set subJsonEnable      "false"
+xui_db_set subTitle           "$SUB_TITLE"
+xui_db_set subPath            "$SUB_PATH"
+xui_db_set subUpdates         "1"
+xui_db_set subRoutingRules    "$ROUTING"
+xui_db_set xrayTemplateConfig "$XRAY_CONFIG_1L"
+xui_db_set webCertFile        "/root/cert/ssl/fullchain.pem"
+xui_db_set webKeyFile         "/root/cert/ssl/privkey.pem"
+xui_db_set subCertFile        "/root/cert/ssl/fullchain.pem"
+xui_db_set subKeyFile         "/root/cert/ssl/privkey.pem"
+
+INBOUND_SETTINGS="{\"clients\":[],\"decryption\":\"none\",\"fallbacks\":[{\"dest\":9443,\"xver\":1}]}"
+INBOUND_SNIFFING='{"enabled":true,"destOverride":["http","tls","quic","fakedns"],"metadataOnly":false,"routeOnly":false}'
+IS_SQL="${INBOUND_SETTINGS//\'/\'\'}"
+SS_SQL="${INBOUND_STREAM//\'/\'\'}"
+SN_SQL="${INBOUND_SNIFFING//\'/\'\'}"
+
+sqlite3 "$XUI_DB" \
+    "DELETE FROM inbounds WHERE tag='inbound-443';
+     INSERT INTO inbounds (user_id,up,down,total,remark,enable,expiry_time,listen,port,protocol,settings,stream_settings,tag,sniffing)
+     VALUES (1,0,0,0,'VLESS Reality',1,0,'',443,'vless','${IS_SQL}','${SS_SQL}','inbound-443','${SN_SQL}');" \
+    || die "Ошибка INSERT inbound в БД"
+
+# ── Хэш пароля (до старта контейнера) ───────────────────────────────────────
+if ! command -v htpasswd &>/dev/null; then
+    apt-get update -qq && apt-get install -y -qq apache2-utils
+    command -v htpasswd &>/dev/null || die "htpasswd не удалось установить."
+fi
+PANEL_PASS_HASH=$(htpasswd -bnBC 10 "" "$PANEL_PASS" | tr -d ':\n') \
+    || die "Не удалось сгенерировать bcrypt-хэш пароля."
+[[ -n "$PANEL_PASS_HASH" ]] || die "bcrypt-хэш пустой."
+
+# Ждём появления таблицы users в БД (контейнер ещё остановлен)
+# Таблица уже должна быть — она создаётся при первом старте выше
+PANEL_PASS_HASH_SQL="${PANEL_PASS_HASH//\'/\'\'}"
+sqlite3 "$XUI_DB" \
+    "UPDATE users SET username='${PANEL_USER}', password='${PANEL_PASS_HASH_SQL}' WHERE id=1;" \
+    || die "Не удалось задать логин/пароль в БД."
+
+# ── Финальный старт (один раз, без рестарта) ─────────────────────────────────
+docker compose -f "${XUI_DIR}/docker-compose.yml" up -d \
+    || die "Не удалось запустить контейнер 3x-ui."
+sleep 3
+success "3x-ui запущен. Управление: docker compose -f ${XUI_DIR}/docker-compose.yml"
