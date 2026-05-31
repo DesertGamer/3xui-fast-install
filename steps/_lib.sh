@@ -74,6 +74,12 @@ wait_for_tcp_port() {
     return 1
 }
 
+validate_port() {
+    local name="$1" port="$2"
+    [[ "$port" =~ ^[0-9]+$ ]] || die "${name} должен быть числом от 1 до 65535, сейчас: ${port}"
+    (( port >= 1 && port <= 65535 )) || die "${name} должен быть числом от 1 до 65535, сейчас: ${port}"
+}
+
 sql_escape() {
     printf '%s' "${1//\'/\'\'}"
 }
@@ -108,6 +114,14 @@ if [[ -z "${PANEL_PATH:-}" ]]; then
     [[ -n "$PANEL_PATH" ]] || die "Не удалось сгенерировать путь панели."
     export PANEL_PATH
 fi
+
+for _port_var in \
+    WARP_PROXY_PORT OPERA_PROXY_PORT TOR_PORT XRAY_API_PORT HY2_PORT \
+    VLESS_PORT PANEL_PORT SUB_PORT
+do
+    validate_port "$_port_var" "${!_port_var}"
+done
+unset _port_var
 
 if [[ -z "${DOMAIN:-}" ]]; then
     read -rp "Введите домен для selfsteal (например vpn.example.com): " DOMAIN

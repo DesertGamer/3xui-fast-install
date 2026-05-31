@@ -32,6 +32,22 @@ if [[ -z "${DOMAIN:-}" ]]; then
     [[ -z "$DOMAIN" ]] && die "Домен не может быть пустым."
 fi
 
+# Локальные переопределения должны попасть в удалённый setup.sh.
+REMOTE_ENV_VARS=(
+    DOMAIN
+    PANEL_PORT PANEL_USER PANEL_PASS PANEL_PATH
+    SUB_PORT SUB_PATH SUB_TITLE
+    WARP_PROXY_PORT OPERA_PROXY_PORT OPERA_COUNTRY TOR_PORT XRAY_API_PORT HY2_PORT
+    XUI_DIR CERT_DIR VLESS_PORT
+)
+remote_env_assignments=()
+for var_name in "${REMOTE_ENV_VARS[@]}"; do
+    var_value="${!var_name:-}"
+    [[ -z "$var_value" ]] && continue
+    remote_env_assignments+=("${var_name}=$(shell_quote "$var_value")")
+done
+remote_env_prefix="${remote_env_assignments[*]}"
+
 # ─── Ожидание SSH ─────────────────────────────────────────────────────────────
 info "Ожидаю SSH ${SSH_USER}@${SERVER_IP}:${SSH_PORT}..."
 WAIT_MAX=300; WAIT_STEP=5; elapsed=0
@@ -67,7 +83,7 @@ if ssh -t "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" \
     "find ${remote_dir_q} -name '*.sh' -exec chmod +x {} +; \
      rm -f /root/3xui-install.log /root/3xui-install-full.log; \
      touch /root/3xui-install.log; \
-     DOMAIN=$(shell_quote "$DOMAIN") bash ${remote_dir_q}/setup.sh"; then
+     ${remote_env_prefix} bash ${remote_dir_q}/setup.sh"; then
     echo
     success "Деплой завершён."
 
