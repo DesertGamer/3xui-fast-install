@@ -1,46 +1,25 @@
 # 3x-ui Personal VPN Setup
 
-Автоматизированная установка личного VPN-сервера. Разворачивает [3x-ui](https://github.com/MHSanaei/3x-ui) с VLESS Reality, Hysteria2, Cloudflare WARP, Opera Proxy, Tor, selfsteal Caddy и автоматической настройкой всей маршрутизации.
+Личный VPN-сервер под ключ за один запуск. Скрипт разворачивает 3x-ui, VLESS Reality, Hysteria2, selfsteal Caddy, Cloudflare WARP, Opera Proxy, Tor, BBR, UFW и fail2ban, а затем сразу выдаёт готовые доступы к панели.
 
-## Что устанавливается
 
-| Компонент           | Описание                                                                                         |
-| ------------------- | ------------------------------------------------------------------------------------------------ |
-| **3x-ui**           | Панель управления Xray (Docker), VLESS Reality на 443 + Hysteria2 на 63000/UDP по умолчанию      |
-| **VLESS + Reality** | Транспорт поверх TLS, маскируется под легитимный домен                                           |
-| **Hysteria2**       | UDP-протокол поверх TLS, маскировка под Twitch, быстрее на потерях — особенно на мобильных сетях |
-| **Caddy selfsteal** | TLS-терминатор на 443 → 9443, выдаёт Let's Encrypt сертификат                                    |
-| **Cloudflare WARP** | SOCKS5-прокси для RU-сайтов (геоблоки, реестр Роскомнадзора)                                     |
-| **Opera Proxy**     | SOCKS5-прокси для зарубежных сервисов (Disney+, Reddit и др.)                                    |
-| **Tor**             | SOCKS5-прокси для .onion и анонимного трафика                                                    |
-| **BBR**             | Алгоритм контроля перегрузки TCP — ускоряет соединение                                           |
-| **UFW**             | Фаервол: открыты SSH, 80, порты Reality/Hysteria2, панели и подписок                             |
-| **fail2ban**        | Защита от перебора паролей                                                                       |
 
-## Маршрутизация трафика (Xray)
+## Что вы получаете
 
-| Трафик                                    | Outbound                                                       |
-| ----------------------------------------- | -------------------------------------------------------------- |
-| Реклама, вредоносные домены               | `blocked`                                                      |
-| RU-домены (.ru, .su, .рф), IP из RU GeoIP | `warp` (WARP) — чтобы не светить IP сервера перед RU-ресурсами |
-| .onion, check.torproject.org              | `tor` — добавлены для примера, настройте под себя              |
-| Disney+, Reddit                           | `opera` — добавлены для примера, настройте под себя            |
-| Всё остальное                             | `direct`                                                       |
+- Готовый 3x-ui в Docker с автозапуском после перезагрузки сервера.
+- Два протокола из коробки: VLESS Reality и Hysteria2.
+- Сертификаты Let's Encrypt через Caddy selfsteal.
+- Раздельную маршрутизацию: RU-трафик через WARP, выбранные зарубежные сервисы через Opera Proxy, `.onion` через Tor, остальное напрямую.
+- Настроенный фаервол, BBR и базовую защиту fail2ban.
+- Backup/restore-скрипты для переноса и восстановления сервера.
 
-GeoIP/GeoSite для клиентов Happ подписки берутся из [roscomvpn-routing](https://github.com/hydraponique/roscomvpn-routing).
+## Для кого
 
-## Требования
-
-- VPS с Debian/Ubuntu, root-доступ по SSH (пользователь root)
-- Версии: Debian 12+ / Ubuntu 22.04+
-- Домен с A-записью, направленной на IP сервера
-- Открытые порты: **80** (Let's Encrypt), **443** (Reality по умолчанию), **63000/UDP** (Hysteria2 по умолчанию)
-
-Рекомендуемый провайдер: [https://www.vdsina.com](https://www.vdsina.com/?partner=nmzki7z7tu)
+Для тех, кто хочет быстро поднять личную VPN-инфраструктуру на VPS без ручной настройки 3x-ui, inbound'ов, сертификатов, firewall-правил и Xray routing. Подходит для личного сервера, тестового стенда или аккуратной самостоятельной установки с понятными логами.
 
 ## Быстрый старт
 
-### С локальной машины (через deploy.sh)
+Нужны VPS с Debian/Ubuntu, root-доступ по SSH и домен с A-записью на IP сервера.
 
 ```bash
 git clone https://github.com/AppsGanin/3xui-fast-install/3xui-personal
@@ -49,86 +28,132 @@ cd 3xui-personal
 bash deploy.sh 1.2.3.4
 ```
 
-По окончании скрипт выведет URL панели, логин и пароль.
+После установки скрипт покажет URL панели, логин, пароль и адрес подписок. Эти же данные сохраняются на сервере в `/root/3xui-credentials.txt`.
 
 Для установки через ИИ-агента см. [AI_INSTALL.md](AI_INSTALL.md).
 
----
+## Компоненты
 
-## Скрипты
+| Компонент           | Что делает                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------ |
+| **3x-ui**           | Панель управления Xray в Docker, inbound'ы VLESS Reality и Hysteria2                             |
+| **VLESS + Reality** | Основной TCP-вход, по умолчанию на `443`, с fallback-маскировкой через Caddy                     |
+| **Hysteria2**       | UDP-вход поверх TLS, по умолчанию на `63000/udp`, хорошо переживает мобильные сети и потери      |
+| **Caddy selfsteal** | Получает Let's Encrypt сертификат и держит fallback-маскировку                                   |
+| **Cloudflare WARP** | Локальный SOCKS5 outbound для RU-ресурсов                                                        |
+| **Opera Proxy**     | Локальный SOCKS5 outbound для выбранных зарубежных сервисов                                      |
+| **Tor**             | Локальный SOCKS5 outbound для `.onion` и отдельных Tor-сценариев                                 |
+| **BBR**             | TCP congestion control для более стабильной скорости                                             |
+| **UFW**             | Открывает только нужные порты: SSH, 80, Reality, Hysteria2, панель и подписки                    |
+| **fail2ban**        | Базовая защита от перебора                                                                       |
 
-### `deploy.sh` — установка с локальной машины
+## Маршрутизация
 
-Копирует скрипты на сервер, запускает `setup.sh` и показывает отфильтрованный лог прогресса. При Ctrl+C — останавливает установку на сервере.
+| Трафик                                    | Куда отправляется                                               |
+| ----------------------------------------- | --------------------------------------------------------------- |
+| Реклама и вредоносные домены              | `blocked`                                                       |
+| RU-домены `.ru`, `.su`, `.рф` и RU GeoIP  | `warp`, чтобы не светить IP сервера перед RU-ресурсами          |
+| `.onion`, `check.torproject.org`          | `tor`                                                           |
+| Disney+, Reddit                           | `opera`                                                         |
+| Всё остальное                             | `direct`                                                        |
+
+GeoIP/GeoSite для клиентов Happ подписки берутся из [roscomvpn-routing](https://github.com/hydraponique/roscomvpn-routing).
+
+## Требования
+
+- Debian 12+ или Ubuntu 22.04+.
+- Root-доступ по SSH.
+- Домен, A-запись которого указывает на IP сервера.
+- Доступные порты: `80/tcp`, порт VLESS Reality (`443/tcp` по умолчанию), порт Hysteria2 (`63000/udp` по умолчанию), порт панели и порт подписок.
+
+## Где взять VPS
+
+Для установки подойдёт любой чистый VPS на Debian или Ubuntu. Если нужен быстрый старт без долгого выбора провайдера, можно взять сервер в VDSina:
+
+**VDSina** — удобный вариант для личного VPN: быстрое создание VPS, root-доступ по SSH, понятная панель управления и тарифы, которых достаточно для домашнего использования 3x-ui. К тому же, при регистрации по [этой ссылке](https://www.vdsina.com/?partner=2c17h7h887kr) вы получите скидку 10% на оплату.
+
+[Создать VPS в VDSina](https://www.vdsina.com/?partner=2c17h7h887kr)
+
+## Установка
+
+Минимальный запуск, домен будет запрошен интерактивно:
 
 ```bash
-# Минимальный (спросит домен интерактивно)
 bash deploy.sh <IP>
+```
 
-# С доменом
+Запуск без интерактива:
+
+```bash
 DOMAIN=vpn.example.com bash deploy.sh <IP>
+```
 
-# Со своим SSH-ключом
+С SSH-ключом:
+
+```bash
 DOMAIN=vpn.example.com bash deploy.sh <IP> -i ~/.ssh/id_rsa
+```
 
-# Нестандартный SSH-порт
+С нестандартным SSH-портом:
+
+```bash
 SSH_PORT=2222 DOMAIN=vpn.example.com bash deploy.sh <IP>
 ```
 
-После завершения выводит содержимое `/root/3xui-credentials.txt`.
+С кастомными портами VPN:
 
----
+```bash
+DOMAIN=vpn.example.com \
+VLESS_PORT=8443 \
+HY2_PORT=63001 \
+bash deploy.sh <IP>
+```
 
-### `backup.sh` — резервное копирование
+`deploy.sh` копирует `steps/` на сервер, запускает `setup.sh`, показывает прогресс и после завершения выводит содержимое `/root/3xui-credentials.txt`.
 
-Останавливает контейнер, создаёт архив на сервере, скачивает локально в `backups/`.
+## После установки
+
+- Панель: `https://<DOMAIN>:<PANEL_PORT>/<PANEL_PATH>/`
+- Подписки: `https://<DOMAIN>:<SUB_PORT><SUB_PATH>`
+- VLESS Reality: `<VLESS_PORT>/tcp`, по умолчанию `443/tcp`
+- Hysteria2: `<HY2_PORT>/udp`, по умолчанию `63000/udp`
+- Лог установки: `/root/3xui-install.log`
+- Полный лог установки: `/root/3xui-install-full.log`
+- Доступы: `/root/3xui-credentials.txt`
+- Контейнер 3x-ui: `docker compose -f /root/docker-compose.yml [start|stop|restart|logs]`
+
+## Backup и restore
+
+Создать бекап:
 
 ```bash
 bash backup.sh <IP>
+```
 
-# С ключом / нестандартным портом
+С ключом, нестандартным SSH-портом или своей локальной папкой:
+
+```bash
 bash backup.sh <IP> -i ~/.ssh/id_rsa
 SSH_PORT=2222 bash backup.sh <IP>
-
-# Своя папка для бекапов
 BACKUP_DIR=~/my-backups bash backup.sh <IP>
 ```
 
-Архив содержит:
-
-- `db/x-ui.db` — база 3x-ui (inbounds, клиенты, настройки панели)
-- `cert/ssl/` — TLS-сертификаты
-- `docker-compose.yml` — конфиг контейнера 3x-ui
-- `caddy/Caddyfile` — конфиг selfsteal
-- `caddy/.env` — переменные окружения Caddy
-- `caddy/docker-compose.yml` — конфиг контейнера Caddy
-- `caddy/html/` — статические файлы сайта-маскировки
-- `3xui-credentials.txt` — URL, логин, пароль
-
----
-
-### `restore.sh` — восстановление из бекапа
-
-Загружает архив на сервер, останавливает контейнеры, восстанавливает данные, поднимает всё обратно.
+Восстановить сервер из архива:
 
 ```bash
 bash restore.sh <IP> backups/backup_1.2.3.4_20260508_120000.tar.gz
-
-# С ключом
 bash restore.sh <IP> backups/backup_*.tar.gz -i ~/.ssh/id_rsa
 ```
 
-Перед восстановлением запросит подтверждение.
-
----
+Архив содержит базу 3x-ui, сертификаты, docker-compose файлы, Caddy-конфиг, статические файлы маскировки и файл доступов.
 
 ## Переменные окружения
 
-Все параметры имеют значения по умолчанию и могут быть переопределены:
+Все ключевые параметры можно переопределить перед запуском `deploy.sh`. Если переменная не задана, `steps/_lib.sh` подставит дефолт.
 
 | Переменная         | По умолчанию   | Описание                            |
 | ------------------ | -------------- | ----------------------------------- |
-| `DOMAIN`           | — (обязателен) | Домен для Reality SNI и сертификата |
+| `DOMAIN`           | —              | Домен для Reality SNI и сертификата |
 | `PANEL_PORT`       | `60000`        | Порт панели 3x-ui                   |
 | `PANEL_USER`       | `admin`        | Логин панели                        |
 | `PANEL_PASS`       | случайный      | Пароль панели                       |
@@ -136,12 +161,13 @@ bash restore.sh <IP> backups/backup_*.tar.gz -i ~/.ssh/id_rsa
 | `SUB_PORT`         | `60001`        | Порт подписок                       |
 | `SUB_PATH`         | `/subs/`       | URL-путь подписок                   |
 | `SUB_TITLE`        | домен          | Название подписки                   |
-| `WARP_PROXY_PORT`  | `40000`        | SOCKS5-порт WARP (localhost)        |
-| `OPERA_PROXY_PORT` | `40001`        | SOCKS5-порт Opera Proxy (localhost) |
+| `VLESS_PORT`       | `443`          | Порт VLESS Reality                  |
+| `HY2_PORT`         | `63000`        | Порт Hysteria2 UDP                  |
+| `WARP_PROXY_PORT`  | `40000`        | SOCKS5-порт WARP на localhost       |
+| `OPERA_PROXY_PORT` | `40001`        | SOCKS5-порт Opera Proxy на localhost |
 | `OPERA_COUNTRY`    | `EU`           | Регион Opera Proxy                  |
-| `TOR_PORT`         | `40002`        | SOCKS5-порт Tor (localhost)         |
-| `XRAY_API_PORT`    | `62789`        | Порт Xray API (localhost)           |
-| `HY2_PORT`         | `63000`        | Порт Hysteria2 (UDP)                |
+| `TOR_PORT`         | `40002`        | SOCKS5-порт Tor на localhost        |
+| `XRAY_API_PORT`    | `62789`        | Порт Xray API на localhost          |
 | `XUI_DIR`          | `/root`        | Директория данных 3x-ui на сервере  |
 | `SSH_PORT`         | `22`           | SSH-порт сервера                    |
 | `SSH_USER`         | `root`         | SSH-пользователь                    |
@@ -151,47 +177,34 @@ bash restore.sh <IP> backups/backup_*.tar.gz -i ~/.ssh/id_rsa
 
 ```bash
 DOMAIN=vpn.example.com \
-PANEL_PORT=8443 \
+PANEL_PORT=60010 \
 PANEL_PASS=MySecretPass \
+VLESS_PORT=8443 \
+HY2_PORT=63001 \
 OPERA_COUNTRY=US \
 bash deploy.sh 1.2.3.4
 ```
 
----
-
 ## Структура проекта
 
-```
+```text
 ├── deploy.sh           # Деплой с локальной машины
 ├── backup.sh           # Резервное копирование
 ├── restore.sh          # Восстановление из бекапа
-├── backups/            # Локальные бекапы (в .gitignore)
+├── backups/            # Локальные бекапы, в .gitignore
 ├── scripts/
-│   └── local_lib.sh    # Общие функции локальных deploy/backup/restore
+│   └── local_lib.sh    # Общие функции deploy/backup/restore
 └── steps/
-    ├── prereqs.sh      # Установка зависимостей (curl, python3, ca-certificates и др.)
-    ├── setup.sh        # Оркестратор — запускает шаги по порядку
-    ├── _lib.sh         # Общие функции, переменные с дефолтами
-    ├── bbr.sh          # Включение BBR congestion control
-    ├── ufw.sh          # Настройка UFW фаервола
-    ├── warp.sh         # Установка Cloudflare WARP
-    ├── opera-proxy.sh  # Установка Opera Proxy
-    ├── tor.sh          # Установка Tor
-    ├── fail2ban.sh     # Установка fail2ban
-    ├── docker.sh       # Установка Docker
-    ├── selfsteal.sh    # Caddy selfsteal + Let's Encrypt
+    ├── setup.sh        # Оркестратор установки
+    ├── _lib.sh         # Общие функции и дефолты env
+    ├── prereqs.sh      # Системные зависимости
+    ├── bbr.sh          # BBR
+    ├── ufw.sh          # UFW firewall
+    ├── warp.sh         # Cloudflare WARP
+    ├── opera-proxy.sh  # Opera Proxy
+    ├── tor.sh          # Tor
+    ├── docker.sh       # Docker
+    ├── fail2ban.sh     # fail2ban
+    ├── selfsteal.sh    # Caddy selfsteal и Let's Encrypt
     └── xui.sh          # 3x-ui, Reality-ключи, Xray config, БД
 ```
-
----
-
-## После установки
-
-- Войти в панель: `https://<DOMAIN>:<PANEL_PORT>/<PANEL_PATH>/`
-- В панели уже настроены два inbound'а:
-  - **VLESS Reality** — порт `<VLESS_PORT>` (`443/TCP` по умолчанию)
-  - **Hysteria2** — порт `<HY2_PORT>/UDP` (`63000/UDP` по умолчанию), маскировка под Twitch, TLS на сертификате домена
-- Подписки: `https://<DOMAIN>:<SUB_PORT>/subs/<UUID>`
-- Управление контейнером: `docker compose -f /root/docker-compose.yml [start|stop|restart|logs]`
-- Лог установки: `/root/3xui-install.log`
-- Доступы: `/root/3xui-credentials.txt`
