@@ -1,8 +1,6 @@
 # 3x-ui Personal VPN Setup
 
-Личный VPN-сервер под ключ за один запуск. Скрипт разворачивает 3x-ui, VLESS Reality, Hysteria2, selfsteal Caddy, Cloudflare WARP, Opera Proxy, Tor, BBR, UFW и fail2ban, а затем сразу выдаёт готовые доступы к панели.
-
-
+Личный VPN-сервер под ключ за один запуск. Скрипты разворачивают 3x-ui, VLESS Reality, Hysteria2, selfsteal Caddy, Cloudflare WARP, Opera Proxy, Tor, BBR, UFW и fail2ban, а затем сразу выдают готовые доступы к панели.
 
 ## Что вы получаете
 
@@ -74,7 +72,43 @@ GeoIP/GeoSite для клиентов Happ подписки берутся из 
 
 [Создать VPS в VDSina](https://www.vdsina.com/?partner=2c17h7h887kr)
 
-## Установка
+## Способы установки
+
+### Прямо на сервере
+
+Этот вариант удобен, если вы уже зашли на VPS по SSH и хотите установить всё без локального деплоя.
+
+```bash
+ssh root@<IP>
+apt-get update && apt-get install -y git
+git clone https://github.com/AppsGanin/3xui-fast-install/3xui-personal
+cd 3xui-personal
+```
+
+Минимальный запуск, домен будет запрошен интерактивно:
+
+```bash
+bash install.sh
+```
+
+Запуск без интерактива:
+
+```bash
+DOMAIN=vpn.example.com bash install.sh
+```
+
+С кастомными портами VPN:
+
+```bash
+DOMAIN=vpn.example.com \
+VLESS_PORT=8443 \
+HY2_PORT=63001 \
+bash install.sh
+```
+
+`install.sh` запускает `steps/setup.sh` на текущем сервере, показывает прогресс и после завершения выводит содержимое `/root/3xui-credentials.txt`.
+
+### С локальной машины через SSH (Linux/Mac/WSL)
 
 Минимальный запуск, домен будет запрошен интерактивно:
 
@@ -149,7 +183,7 @@ bash restore.sh <IP> backups/backup_*.tar.gz -i ~/.ssh/id_rsa
 
 ## Переменные окружения
 
-Все ключевые параметры можно переопределить перед запуском `deploy.sh`. Если переменная не задана, `steps/_lib.sh` подставит дефолт.
+Все ключевые параметры можно переопределить перед запуском `install.sh` или `deploy.sh`. Если переменная не задана, `steps/_lib.sh` подставит дефолт.
 
 | Переменная         | По умолчанию   | Описание                            |
 | ------------------ | -------------- | ----------------------------------- |
@@ -182,12 +216,13 @@ PANEL_PASS=MySecretPass \
 VLESS_PORT=8443 \
 HY2_PORT=63001 \
 OPERA_COUNTRY=US \
-bash deploy.sh 1.2.3.4
+bash install.sh
 ```
 
 ## Структура проекта
 
 ```text
+├── install.sh          # Установка прямо на сервере
 ├── deploy.sh           # Деплой с локальной машины
 ├── backup.sh           # Резервное копирование
 ├── restore.sh          # Восстановление из бекапа
