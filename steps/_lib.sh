@@ -113,6 +113,7 @@ export XUI_DIR="${XUI_DIR:-/root}"
 export CERT_DIR="${CERT_DIR:-${XUI_DIR}/cert/ssl}"
 export VLESS_PORT="${VLESS_PORT:-443}"
 export LOGFILE="${LOGFILE:-/root/3xui-install.log}"
+export XUI_VERSION="${XUI_VERSION:-latest}"
 
 export PANEL_PORT="${PANEL_PORT:-60000}"
 export PANEL_USER="${PANEL_USER:-admin}"

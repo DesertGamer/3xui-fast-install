@@ -9,7 +9,7 @@ mkdir -p "${XUI_DIR}/db" "${XUI_DIR}/cert"
 cat > "${XUI_DIR}/docker-compose.yml" <<EOF
 services:
   3xui:
-    image: ghcr.io/mhsanaei/3x-ui:latest
+    image: ghcr.io/mhsanaei/3x-ui:${XUI_VERSION}
     container_name: 3xui_app
     hostname: ${DOMAIN}
     volumes:
