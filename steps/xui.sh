@@ -25,8 +25,15 @@ services:
 EOF
 
 # ── Запуск контейнера ────────────────────────────────────────────────────────
-docker compose -f "${XUI_DIR}/docker-compose.yml" pull \
-    || die "Не удалось скачать образ 3x-ui."
+_pull_retries=3
+for _pull_attempt in $(seq 1 "$_pull_retries"); do
+    docker compose -f "${XUI_DIR}/docker-compose.yml" pull && break
+    if [[ "$_pull_attempt" -eq "$_pull_retries" ]]; then
+        die "Не удалось скачать образ 3x-ui после ${_pull_retries} попыток."
+    fi
+    warn "Попытка ${_pull_attempt}/${_pull_retries} не удалась, повтор через 10с..."
+    sleep 10
+done
 docker compose -f "${XUI_DIR}/docker-compose.yml" up -d \
     || die "Не удалось запустить контейнер 3x-ui."
 
