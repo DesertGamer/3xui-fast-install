@@ -43,17 +43,60 @@ if ! TERM=dumb bash "$selfsteal_installer" @ --debug --force --domain "$DOMAIN" 
     sed 's/^/[SELFSTEAL] /' "$selfsteal_log" | tail -n 80
     die "Ошибка установки selfsteal Caddy."
 fi
-sed 's/^/[SELFSTEAL] /' "$selfsteal_log" | tail -n 80
 
 info "Жду сертификат Let's Encrypt от Caddy (до 60 с)..."
+_cert_found=0
 for i in $(seq 1 60); do
-    docker exec "$CADDY_CONTAINER" test -f "$CERT_INSIDE" 2>/dev/null && break
+    if docker exec "$CADDY_CONTAINER" test -f "$CERT_INSIDE" 2>/dev/null; then
+        _cert_found=1; break
+    fi
     sleep 1
 done
-if ! docker exec "$CADDY_CONTAINER" test -f "$CERT_INSIDE" 2>/dev/null; then
-    warn "Логи Caddy для диагностики:"
-    docker logs --tail 40 "$CADDY_CONTAINER" 2>&1 || true
-    die "Caddy не получил сертификат за 60 секунд. DNS: $DOMAIN → $_dns_ip. Порт 80 должен быть открыт."
+# Fallback: Caddy может хранить cert по другому пути (ZeroSSL и др.)
+if [[ "$_cert_found" -eq 0 ]]; then
+    _alt=$(docker exec "$CADDY_CONTAINER" \
+        find /data/caddy/certificates -name "${DOMAIN}.crt" 2>/dev/null | head -1 || true)
+    if [[ -n "$_alt" ]]; then
+        CERT_INSIDE="$_alt"; KEY_INSIDE="${_alt%.crt}.key"; _cert_found=1
+    fi
+fi
+if [[ "$_cert_found" -eq 0 ]]; then
+    _container_status=$(docker inspect --format '{{.State.Status}}' "$CADDY_CONTAINER" 2>/dev/null || echo "not_found")
+    if [[ "$_container_status" == "not_found" ]]; then
+        [[ -s "$selfsteal_log" ]] && sed 's/^/[SELFSTEAL] /' "$selfsteal_log" | tail -n 80
+        die "Контейнер $CADDY_CONTAINER не создан. Selfsteal-инсталлер не запустил Caddy."
+    fi
+    [[ "$_container_status" != "running" ]] && \
+        warn "Контейнер $CADDY_CONTAINER не запущен (статус: $_container_status)."
+
+    # Caddy пишет в /var/log/caddy/access.log, docker logs почти пустой
+    _caddy_logs=$(docker exec "$CADDY_CONTAINER" tail -n 100 /var/log/caddy/access.log 2>/dev/null \
+        || docker logs --tail 100 "$CADDY_CONTAINER" 2>&1 || true)
+
+    warn "Ошибки из лога Caddy:"
+    echo "$_caddy_logs" | grep '"level":"error"' | \
+        grep -oP '"(msg|error|detail)":"[^"]*"' | \
+        grep -vE '"(msg|error|detail)":""' | sed 's/^/  /' || true
+
+    if echo "$_caddy_logs" | grep -qiE "rateLimited|too many.*authorizations|retry after"; then
+        _retry=$(echo "$_caddy_logs" | grep -oP 'retry after \K[0-9]{4}-[0-9-]+ [0-9:]+ UTC' | tail -1 || true)
+        die "Rate limit Let's Encrypt для $DOMAIN.${_retry:+ Повторите после: $_retry (UTC).}
+Решения: подождите или создайте другой поддомен."
+    elif echo "$_caddy_logs" | grep -qiE "SERVFAIL|nameservers may be malfunctioning"; then
+        die "DNS для $DOMAIN возвращает SERVFAIL — nameservers DuckDNS временно не отвечают.
+Подождите 10-30 минут и повторите. Статус: https://www.duckdns.org/"
+    elif echo "$_caddy_logs" | grep -qiE "no such host|NXDOMAIN|query timed out"; then
+        die "DNS для $DOMAIN не разрешается (IP в DNS: $_dns_ip).
+Проверьте A-запись и дождитесь распространения DNS."
+    elif echo "$_caddy_logs" | grep -qiE "connection refused|i/o timeout|dial tcp.*:80"; then
+        die "Порт 80/tcp недоступен снаружи.
+Проверьте: ufw allow 80/tcp && ufw reload; порт не заблокирован провайдером."
+    elif echo "$_caddy_logs" | grep -qiE "no route to host|network unreachable"; then
+        die "Сервер не может достучаться до Let's Encrypt.
+Проверьте: curl -v https://acme-v02.api.letsencrypt.org/directory"
+    else
+        die "Caddy не получил сертификат за 60 с. DNS: $DOMAIN → $_dns_ip. Контейнер: $_container_status."
+    fi
 fi
 
 info "Копирую сертификат из Caddy на хост..."
