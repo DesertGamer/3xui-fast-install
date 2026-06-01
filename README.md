@@ -236,6 +236,8 @@ bash restore.sh <IP> backups/backup_*.tar.gz -i ~/.ssh/id_rsa
 | `TOR_PORT`         | `40002`      | SOCKS5-порт Tor на localhost         |
 | `XRAY_API_PORT`    | `62789`      | Порт Xray API на localhost           |
 | `XUI_DIR`          | `/root`      | Директория данных 3x-ui на сервере   |
+| `XUI_VERSION`      | `latest`     | Версия образа 3x-ui (тег Docker)     |
+| `CERT_DIR`         | `$XUI_DIR/cert/ssl` | Путь к TLS-сертификатам       |
 | `SSH_PORT`         | `22`         | SSH-порт сервера                     |
 | `SSH_USER`         | `root`       | SSH-пользователь                     |
 | `BACKUP_DIR`       | `./backups`  | Локальная папка для бекапов          |
