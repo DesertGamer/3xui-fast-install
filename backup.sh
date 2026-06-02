@@ -28,52 +28,26 @@ REMOTE_TMP="/tmp/3xui_backup_${TIMESTAMP}.tar.gz"
 
 mkdir -p "$BACKUP_DIR"
 
-XUI_DIR="${XUI_DIR:-/root}"
+XUI_DIR="/root"
 
+# Устанавливаем ControlMaster — запрашивает пароль один раз
+info "Подключаюсь к ${SERVER_IP}..."
+ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" true
+
+# Копируем скрипт на сервер и запускаем
 info "Создаю архив на сервере ${SERVER_IP}..."
+scp "${SCP_OPTS[@]}" "${SCRIPT_ROOT}/scripts/remote_backup.sh" "${SSH_USER}@${SERVER_IP}:/tmp/remote_backup.sh" \
+    || die "Не удалось скопировать remote_backup.sh"
 ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" \
-    XUI_DIR="${XUI_DIR}" REMOTE_TMP="${REMOTE_TMP}" bash <<'REMOTE'
-set -euo pipefail
+    "TIMESTAMP=${TIMESTAMP} bash /tmp/remote_backup.sh; rm -f /tmp/remote_backup.sh" \
+    || die "Ошибка при создании архива на сервере"
 
-COMPOSE_FILE="${XUI_DIR}/docker-compose.yml"
-
-# Останавливаем контейнер чтобы БД не изменилась во время копирования
-if [[ -f "$COMPOSE_FILE" ]]; then
-    docker compose -f "$COMPOSE_FILE" stop 2>/dev/null || true
-fi
-
-TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT
-
-# БД и сертификаты 3x-ui
-[[ -d "${XUI_DIR}/db"   ]] && cp -a "${XUI_DIR}/db"   "$TMP_DIR/"
-[[ -d "${XUI_DIR}/cert" ]] && cp -a "${XUI_DIR}/cert" "$TMP_DIR/"
-
-# docker-compose.yml
-[[ -f "$COMPOSE_FILE" ]] && cp "$COMPOSE_FILE" "$TMP_DIR/"
-
-# Caddy selfsteal — Caddyfile, .env, docker-compose.yml, статический сайт
-if [[ -d /opt/caddy ]]; then
-    mkdir -p "$TMP_DIR/caddy"
-    rsync -a --exclude='logs/' /opt/caddy/ "$TMP_DIR/caddy/"
-fi
-
-# Файл с доступами
-[[ -f /root/3xui-credentials.txt ]] && cp /root/3xui-credentials.txt "$TMP_DIR/"
-
-tar -czf "$REMOTE_TMP" -C "$TMP_DIR" .
-
-# Стартуем обратно
-if [[ -f "$COMPOSE_FILE" ]]; then
-    docker compose -f "$COMPOSE_FILE" up -d 2>/dev/null || true
-fi
-REMOTE
-
+# Скачиваем архив
 info "Скачиваю архив..."
 scp "${SCP_OPTS[@]}" "${SSH_USER}@${SERVER_IP}:${REMOTE_TMP}" "${BACKUP_DIR}/${BACKUP_NAME}"
 
 info "Удаляю временный файл на сервере..."
-ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" "rm -f $(shell_quote "$REMOTE_TMP")"
+ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" "rm -f ${REMOTE_TMP}"
 
 echo
 success "Бекап сохранён: ${BACKUP_DIR}/${BACKUP_NAME}"

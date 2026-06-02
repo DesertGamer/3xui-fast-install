@@ -35,7 +35,7 @@ read -rp "Продолжить? [y/N] " CONFIRM
 info "Загружаю архив на сервер..."
 scp "${SCP_OPTS[@]}" "$BACKUP_FILE" "${SSH_USER}@${SERVER_IP}:${REMOTE_TMP}"
 
-XUI_DIR="${XUI_DIR:-/root}"
+XUI_DIR="/root"
 
 info "Восстанавливаю данные на сервере..."
 ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" \
@@ -89,6 +89,14 @@ fi
 if [[ -f "$TMP_DIR/3xui-credentials.txt" ]]; then
     cp "$TMP_DIR/3xui-credentials.txt" /root/3xui-credentials.txt
     chmod 600 /root/3xui-credentials.txt
+fi
+
+# Восстанавливаем UFW правила
+if [[ -f "$TMP_DIR/ufw-user.rules" ]] && command -v ufw &>/dev/null; then
+    echo "[INFO] Восстанавливаю правила UFW..."
+    cp "$TMP_DIR/ufw-user.rules"  /etc/ufw/user.rules
+    [[ -f "$TMP_DIR/ufw-user6.rules" ]] && cp "$TMP_DIR/ufw-user6.rules" /etc/ufw/user6.rules
+    ufw reload && echo "[OK] UFW правила восстановлены."
 fi
 
 # Стартуем контейнеры

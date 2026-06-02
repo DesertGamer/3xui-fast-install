@@ -103,13 +103,13 @@ random_uuid_v4() {
 
 [[ $EUID -ne 0 ]] && die "Запустите скрипт от root: sudo bash $0"
 
-export WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
-export OPERA_PROXY_PORT="${OPERA_PROXY_PORT:-40001}"
-export TOR_PORT="${TOR_PORT:-40002}"
-export XRAY_API_PORT="${XRAY_API_PORT:-62789}"
+export WARP_PROXY_PORT="40000"
+export OPERA_PROXY_PORT="40001"
+export TOR_PORT="40002"
+export XRAY_API_PORT="62789"
 export HY2_PORT="${HY2_PORT:-63000}"
 export OPERA_COUNTRY="${OPERA_COUNTRY:-EU}"
-export XUI_DIR="${XUI_DIR:-/root}"
+export XUI_DIR="/root"
 export CERT_DIR="${CERT_DIR:-${XUI_DIR}/cert/ssl}"
 export VLESS_PORT="${VLESS_PORT:-443}"
 export TRAFFIC_RESET="${TRAFFIC_RESET:-monthly}"
@@ -165,8 +165,7 @@ fi
 [[ "$CLIENT_HY2_AUTH" =~ ^[A-Za-z0-9._@=-]+$ ]] || die "CLIENT_HY2_AUTH может содержать только латиницу, цифры, точку, подчёркивание, @, = и дефис."
 
 for _port_var in \
-    WARP_PROXY_PORT OPERA_PROXY_PORT TOR_PORT XRAY_API_PORT HY2_PORT \
-    VLESS_PORT PANEL_PORT SUB_PORT
+    HY2_PORT VLESS_PORT PANEL_PORT SUB_PORT
 do
     validate_port "$_port_var" "${!_port_var}"
 done
