@@ -112,6 +112,7 @@ export OPERA_COUNTRY="${OPERA_COUNTRY:-EU}"
 export XUI_DIR="${XUI_DIR:-/root}"
 export CERT_DIR="${CERT_DIR:-${XUI_DIR}/cert/ssl}"
 export VLESS_PORT="${VLESS_PORT:-443}"
+export TRAFFIC_RESET="${TRAFFIC_RESET:-monthly}"
 export LOGFILE="${LOGFILE:-/root/3xui-install.log}"
 export XUI_VERSION="${XUI_VERSION:-latest}"
 
@@ -139,7 +140,7 @@ if [[ -z "${PANEL_PATH:-}" ]]; then
 fi
 
 if [[ -z "$CLIENT_EMAIL" ]]; then
-    CLIENT_EMAIL="client-$(random_alnum 6)"
+    CLIENT_EMAIL="$(random_alnum 10)"
     export CLIENT_EMAIL
 fi
 

@@ -39,7 +39,7 @@ REMOTE_ENV_VARS=(
     SUB_PORT SUB_PATH SUB_TITLE
     CLIENT_EMAIL CLIENT_UUID CLIENT_SUB_ID CLIENT_HY2_AUTH
     WARP_PROXY_PORT OPERA_PROXY_PORT OPERA_COUNTRY TOR_PORT XRAY_API_PORT HY2_PORT
-    XUI_DIR CERT_DIR VLESS_PORT
+    XUI_DIR CERT_DIR VLESS_PORT TRAFFIC_RESET
 )
 remote_env_assignments=()
 for var_name in "${REMOTE_ENV_VARS[@]}"; do
@@ -57,7 +57,7 @@ while true; do
     if grep -q "REMOTE HOST IDENTIFICATION HAS CHANGED" <<<"$ssh_error"; then
         warn "SSH host key для ${SERVER_IP} изменился (сервер переустановлен?)."
         read -rp "Удалить старый ключ и продолжить? [Y/n] " _key_ans
-        if [[ -z "$_key_ans" || "${_key_ans,,}" == "y" ]]; then
+        if [[ -z "$_key_ans" || "$(echo "$_key_ans" | tr '[:upper:]' '[:lower:]')" == "y" ]]; then
             ssh-keygen -R "${SERVER_IP}" 2>/dev/null || true
             info "Старый ключ удалён, повторяю подключение..."
             continue
@@ -77,14 +77,14 @@ _has_existing=$(ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" \
 if [[ "$_has_existing" == "yes" ]]; then
     warn "На сервере обнаружена существующая установка."
     read -rp "Создать бэкап перед деплоем? [Y/n] " _bk_ask
-    if [[ -z "$_bk_ask" || "${_bk_ask,,}" == "y" ]]; then
+    if [[ -z "$_bk_ask" || "$(echo "$_bk_ask" | tr '[:upper:]' '[:lower:]')" == "y" ]]; then
         if SSH_PORT="$SSH_PORT" SSH_USER="$SSH_USER" \
            bash "$SCRIPT_ROOT/backup.sh" "$SERVER_IP" ${SSH_EXTRA[@]+"${SSH_EXTRA[@]}"}; then
             success "Бэкап создан."
         else
             warn "Бэкап не удался."
             read -rp "Продолжить деплой без бэкапа? [Y/n] " _bk_ans
-            [[ -z "$_bk_ans" || "${_bk_ans,,}" == "y" ]] || die "Прервано."
+            [[ -z "$_bk_ans" || "$(echo "$_bk_ans" | tr '[:upper:]' '[:lower:]')" == "y" ]] || die "Прервано."
         fi
     else
         warn "Бэкап пропущен."
