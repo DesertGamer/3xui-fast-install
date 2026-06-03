@@ -128,14 +128,12 @@ export CLIENT_SUB_ID="${CLIENT_SUB_ID:-}"
 export CLIENT_HY2_AUTH="${CLIENT_HY2_AUTH:-}"
 
 if [[ -z "${PANEL_PASS:-}" ]]; then
-    PANEL_PASS=$(openssl rand -base64 36 | tr -dc 'a-zA-Z0-9' | head -c 18 || true)
-    [[ -n "$PANEL_PASS" ]] || die "Не удалось сгенерировать пароль панели."
+    PANEL_PASS=$(random_alnum 18)
     export PANEL_PASS
 fi
 
 if [[ -z "${PANEL_PATH:-}" ]]; then
-    PANEL_PATH=$(tr -dc 'a-z0-9' </dev/urandom | head -c 8 || true)
-    [[ -n "$PANEL_PATH" ]] || die "Не удалось сгенерировать путь панели."
+    PANEL_PATH=$(random_alnum 8 | tr '[:upper:]' '[:lower:]')
 fi
 # Нормализуем: путь должен начинаться и заканчиваться на /
 [[ "$PANEL_PATH" != /* ]]  && PANEL_PATH="/${PANEL_PATH}"
