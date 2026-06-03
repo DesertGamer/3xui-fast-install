@@ -136,8 +136,16 @@ fi
 if [[ -z "${PANEL_PATH:-}" ]]; then
     PANEL_PATH=$(tr -dc 'a-z0-9' </dev/urandom | head -c 8 || true)
     [[ -n "$PANEL_PATH" ]] || die "Не удалось сгенерировать путь панели."
-    export PANEL_PATH
 fi
+# Нормализуем: путь должен начинаться и заканчиваться на /
+[[ "$PANEL_PATH" != /* ]]  && PANEL_PATH="/${PANEL_PATH}"
+[[ "$PANEL_PATH" != */ ]]  && PANEL_PATH="${PANEL_PATH}/"
+export PANEL_PATH
+
+# Нормализуем SUB_PATH аналогично
+[[ "$SUB_PATH" != /* ]]    && SUB_PATH="/${SUB_PATH}"
+[[ "$SUB_PATH" != */ ]]    && SUB_PATH="${SUB_PATH}/"
+export SUB_PATH
 
 if [[ -z "$CLIENT_EMAIL" ]]; then
     CLIENT_EMAIL="$(random_alnum 10)"
