@@ -221,6 +221,47 @@ bash restore.sh <IP> backups/backup_*.tar.gz -i ~/.ssh/id_rsa
 
 Архив содержит базу 3x-ui, сертификаты, docker-compose файлы, Caddy-конфиг, статические файлы маскировки и файл доступов.
 
+### Прямо на сервере (без локальной машины)
+
+Скрипты `steps/backup.sh` и `steps/restore.sh` деплоятся на сервер вместе с остальными шагами и работают автономно.
+
+Создать бекап:
+
+```bash
+bash /root/3xui-setup/backup.sh
+```
+
+Архивы сохраняются в `/root/backups/`, автоматически ротируются (хранятся последние 7). Количество изменяется через `KEEP`:
+
+```bash
+KEEP=14 bash /root/3xui-setup/backup.sh
+```
+
+Восстановить — последний бекап:
+
+```bash
+bash /root/3xui-setup/restore.sh latest
+```
+
+Восстановить — выбор из списка интерактивно:
+
+```bash
+bash /root/3xui-setup/restore.sh
+```
+
+Восстановить — конкретный файл:
+
+```bash
+bash /root/3xui-setup/restore.sh 3xui_20260601_120000.tar.gz
+```
+
+Или через SSH с локальной машины без копирования файлов:
+
+```bash
+ssh root@<IP> 'bash /root/3xui-setup/backup.sh'
+ssh root@<IP> 'bash /root/3xui-setup/restore.sh latest'
+```
+
 ## Переменные окружения
 
 Все ключевые параметры можно переопределить перед запуском `install.sh` или `deploy.sh`. Если переменная не задана, `steps/_lib.sh` подставит дефолт.
@@ -246,7 +287,8 @@ bash restore.sh <IP> backups/backup_*.tar.gz -i ~/.ssh/id_rsa
 | `CERT_DIR`        | `$XUI_DIR/cert/ssl` | Путь к TLS-сертификатам                               |
 | `SSH_PORT`        | `22`                | SSH-порт сервера                                      |
 | `SSH_USER`        | `root`              | SSH-пользователь                                      |
-| `BACKUP_DIR`      | `./backups`         | Локальная папка для бекапов                           |
+| `BACKUP_DIR`      | `./backups`         | Локальная папка для бекапов (deploy/backup/restore)   |
+| `KEEP`            | `7`                 | Кол-во бекапов на сервере в `/root/backups/`          |
 
 Пример с кастомными параметрами:
 
@@ -291,5 +333,7 @@ bash install.sh
     ├── docker.sh       # Docker
     ├── fail2ban.sh     # fail2ban
     ├── selfsteal.sh    # Caddy selfsteal и Let's Encrypt
-    └── xui.sh          # 3x-ui, Reality-ключи, Xray config, БД
+    ├── xui.sh          # 3x-ui, Reality-ключи, Xray config, БД
+    ├── backup.sh       # Серверный бекап в /root/backups/
+    └── restore.sh      # Восстановление из бекапа на сервере
 ```
