@@ -266,29 +266,27 @@ ssh root@<IP> 'bash /root/3xui-setup/restore.sh latest'
 
 Все ключевые параметры можно переопределить перед запуском `install.sh` или `deploy.sh`. Если переменная не задана, `steps/_lib.sh` подставит дефолт.
 
-| Переменная        | По умолчанию        | Описание                                              |
-| ----------------- | ------------------- | ----------------------------------------------------- |
-| `DOMAIN`          | —                   | Домен для Reality SNI и сертификата                   |
-| `PANEL_PORT`      | `60000`             | Порт панели 3x-ui                                     |
-| `PANEL_USER`      | `admin`             | Логин панели                                          |
-| `PANEL_PASS`      | случайный           | Пароль панели                                         |
-| `PANEL_PATH`      | случайный           | URL-путь панели                                       |
-| `SUB_PORT`        | `60001`             | Порт подписок                                         |
-| `SUB_PATH`        | `/subs/`            | URL-путь подписок                                     |
-| `SUB_TITLE`       | домен               | Название подписки                                     |
-| `CLIENT_EMAIL`    | случайный           | Имя автоматически созданного клиента                  |
-| `CLIENT_UUID`     | случайный           | UUID VLESS-клиента                                    |
-| `CLIENT_SUB_ID`   | случайный           | ID персональной подписки                              |
-| `CLIENT_HY2_AUTH` | случайный           | Auth-пароль Hysteria2-клиента                         |
-| `VLESS_PORT`      | `443`               | Порт VLESS Reality                                    |
-| `HY2_PORT`        | `63000`             | Порт Hysteria2 UDP                                    |
-| `TRAFFIC_RESET`   | `monthly`           | Сброс трафика инбаундов (`never`, `daily`, `monthly`) |
-| `XUI_VERSION`     | `latest`            | Версия образа 3x-ui (тег Docker)                      |
-| `CERT_DIR`        | `$XUI_DIR/cert/ssl` | Путь к TLS-сертификатам                               |
-| `SSH_PORT`        | `22`                | SSH-порт сервера                                      |
-| `SSH_USER`        | `root`              | SSH-пользователь                                      |
-| `BACKUP_DIR`      | `./backups`         | Локальная папка для бекапов (deploy/backup/restore)   |
-| `KEEP`            | `7`                 | Кол-во бекапов на сервере в `/root/backups/`          |
+| Переменная        | По умолчанию | Описание                                              |
+| ----------------- | ------------ | ----------------------------------------------------- |
+| `DOMAIN`          | —            | Домен для Reality SNI и сертификата                   |
+| `PANEL_PORT`      | `60000`      | Порт панели 3x-ui                                     |
+| `PANEL_USER`      | `admin`      | Логин панели                                          |
+| `PANEL_PASS`      | случайный    | Пароль панели                                         |
+| `PANEL_PATH`      | случайный    | URL-путь панели                                       |
+| `SUB_PORT`        | `60001`      | Порт подписок                                         |
+| `SUB_PATH`        | `/subs/`     | URL-путь подписок                                     |
+| `SUB_TITLE`       | домен        | Название подписки                                     |
+| `CLIENT_EMAIL`    | случайный    | Имя автоматически созданного клиента                  |
+| `CLIENT_UUID`     | случайный    | UUID VLESS-клиента                                    |
+| `CLIENT_SUB_ID`   | случайный    | ID персональной подписки                              |
+| `CLIENT_HY2_AUTH` | случайный    | Auth-пароль Hysteria2-клиента                         |
+| `VLESS_PORT`      | `443`        | Порт VLESS Reality                                    |
+| `HY2_PORT`        | `63000`      | Порт Hysteria2 UDP                                    |
+| `OPERA_REGION`    | `EU`         | Регион для Opera Proxy (`AM`, `EU`, `AS`, и т.д.)     |
+| `TRAFFIC_RESET`   | `monthly`    | Сброс трафика инбаундов (`never`, `daily`, `monthly`) |
+| `XUI_VERSION`     | `latest`     | Версия образа 3x-ui (тег Docker)                      |
+| `SSH_PORT`        | `22`         | SSH-порт сервера                                      |
+| `SSH_USER`        | `root`       | SSH-пользователь                                      |
 
 Пример с кастомными параметрами:
 
@@ -298,7 +296,7 @@ PANEL_PORT=60010 \
 PANEL_PASS=MySecretPass \
 VLESS_PORT=8443 \
 HY2_PORT=63001 \
-OPERA_COUNTRY=US \
+OPERA_REGION=US \
 bash install.sh
 ```
 

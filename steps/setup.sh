@@ -54,7 +54,7 @@ cat > /root/3xui-credentials.txt <<CREDS
 Selfsteal      : https://${DOMAIN}
 Сертификат     : ${XUI_DIR}/cert/ssl/fullchain.pem
 WARP SOCKS5    : 127.0.0.1:${WARP_PROXY_PORT}
-Opera SOCKS5   : 127.0.0.1:${OPERA_PROXY_PORT} (регион: ${OPERA_COUNTRY})
+Opera SOCKS5   : 127.0.0.1:${OPERA_PROXY_PORT} (регион: ${OPERA_REGION})
 Tor SOCKS5     : 127.0.0.1:${TOR_PORT}
 CREDS
 chmod 600 /root/3xui-credentials.txt

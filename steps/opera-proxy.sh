@@ -57,7 +57,7 @@ else
 fi
 
 # ── Systemd-сервис (создаётся/обновляется всегда) ────────────────────────────
-info "Создаю systemd-сервис opera-proxy (порт ${OPERA_PROXY_PORT}, регион: ${OPERA_COUNTRY})..."
+info "Создаю systemd-сервис opera-proxy (порт ${OPERA_PROXY_PORT}, регион: ${OPERA_REGION})..."
 cat > "$OPERA_SERVICE" <<EOF
 [Unit]
 Description=Opera Proxy (SurfEasy VPN)
@@ -68,7 +68,7 @@ Type=simple
 ExecStart=${OPERA_BIN} \\
     -socks-mode \\
     -bind-address 127.0.0.1:${OPERA_PROXY_PORT} \\
-    -country ${OPERA_COUNTRY} \\
+    -country ${OPERA_REGION} \\
     -server-selection fastest
 Restart=on-failure
 RestartSec=10
@@ -92,7 +92,7 @@ for i in $(seq 1 10); do
 done
 
 if port_listening "$OPERA_PROXY_PORT"; then
-    success "opera-proxy запущен. SOCKS5: 127.0.0.1:${OPERA_PROXY_PORT} (регион: ${OPERA_COUNTRY})"
+    success "opera-proxy запущен. SOCKS5: 127.0.0.1:${OPERA_PROXY_PORT} (регион: ${OPERA_REGION})"
 else
     warn "opera-proxy не слушает порт ${OPERA_PROXY_PORT} — возможно, IP сервера заблокирован Opera API. После установки измените правила маршрутизации, чтобы не использовать opera-proxy"
 fi
