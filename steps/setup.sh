@@ -22,6 +22,10 @@ source "$SCRIPT_DIR/_lib.sh"
 info "Полный лог установки: $FULL_LOGFILE"
 trap 'printf "[$(date +%T)] ABORT\n" >> "$FULL_LOGFILE"; printf "[ERROR] Установка прервана. Подробности: %s\n" "$FULL_LOGFILE" >> "$LOGFILE"; printf "[ERROR] Установка прервана. Подробности: %s\n" "$FULL_LOGFILE" >&3; exit 1' ERR
 
+if truthy "${LOW_POWER_MODE:-0}"; then
+    warn "LOW_POWER_MODE включён: снижу фоновую нагрузку и урежу шумные сервисы."
+fi
+
 # ─── Запуск шагов как подпроцессов ───────────────────────────────────────────
 _run_step() {
     local label="$1" script="$2"
@@ -30,7 +34,7 @@ _run_step() {
     printf "\n%s\n" "$line"
     printf "\n%s\n" "$line" >>"$LOGFILE"
     printf "\n%s\n" "$line" >&3
-    bash "$script"
+    spinner_run "[${label}] идет..." bash "$script"
 }
 
 _run_step "Prereqs"     "$SCRIPT_DIR/prereqs.sh"
@@ -40,7 +44,13 @@ _run_step "WARP"        "$SCRIPT_DIR/warp.sh"
 _run_step "Opera Proxy" "$SCRIPT_DIR/opera-proxy.sh"
 _run_step "Tor"         "$SCRIPT_DIR/tor.sh"
 _run_step "Docker"      "$SCRIPT_DIR/docker.sh"
-_run_step "fail2ban"    "$SCRIPT_DIR/fail2ban.sh"
+
+if truthy "${LOW_POWER_MODE:-0}"; then
+    info "LOW_POWER_MODE: fail2ban-step пропущен, чтобы не нагружать слабый сервер лишним сервисом."
+else
+    _run_step "fail2ban"    "$SCRIPT_DIR/fail2ban.sh"
+fi
+
 _run_step "Selfsteal"   "$SCRIPT_DIR/selfsteal.sh"
 _run_step "3x-ui"       "$SCRIPT_DIR/xui.sh"
 

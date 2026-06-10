@@ -10,28 +10,63 @@ CERT_INSIDE="/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${D
 KEY_INSIDE="/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${DOMAIN}/${DOMAIN}.key"
 
 info "Проверяю DNS: $DOMAIN → этот сервер..."
-_server_ip=$(curl -fsSL -4 --connect-timeout 5 ifconfig.io 2>/dev/null \
-           || curl -fsSL -4 --connect-timeout 5 icanhazip.com 2>/dev/null \
-           || true)
+ensure_dns "Проверка DNS домена" "$DOMAIN"
+_server_ip=$(ip -4 route get 1.1.1.1 2>/dev/null \
+    | awk '{
+        for (i = 1; i <= NF; i++) {
+            if ($i == "src") {
+                print $(i + 1);
+                exit;
+            }
+        }
+    }' || true)
+if [[ -z "$_server_ip" ]]; then
+    _server_ip=$(curl -fsSL -4 --connect-timeout 5 ifconfig.io 2>/dev/null \
+               || curl -fsSL -4 --connect-timeout 5 icanhazip.com 2>/dev/null \
+               || true)
+fi
 _dns_a_records=$(dig +short A "$DOMAIN" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)
-_dns_ip=$(printf '%s\n' "$_dns_a_records" | head -1)
-_dns_ahosts=$(getent ahosts "$DOMAIN" 2>/dev/null | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $1}' | uniq || true)
-if [[ -z "$_dns_ip" && -n "$_dns_ahosts" ]]; then
-    _dns_ip=$(printf '%s\n' "$_dns_ahosts" | head -1)
+_dns_ahosts_raw=$(getent ahosts "$DOMAIN" 2>/dev/null || true)
+_dns_ahosts=$(printf '%s\n' "$_dns_ahosts_raw" \
+    | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $1}' \
+    | sort -u || true)
+_dns_resolved_ips=$(printf '%s\n%s\n' "$_dns_a_records" "$_dns_ahosts" \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+    | sort -u || true)
+_dns_ip=$(printf '%s\n' "$_dns_resolved_ips" | head -1)
+
+if [[ -z "$_dns_resolved_ips" ]]; then
+    dns_diagnostics "Проверка DNS домена" "$DOMAIN" "$_server_ip" "$_dns_ip"
+    die "DNS для $DOMAIN не разрешается: A-записи и getent ahosts не вернули IPv4-адреса."
 fi
-if [[ -z "$_dns_ip" ]]; then
-    die "DNS для $DOMAIN не разрешается. Убедитесь, что A-запись настроена. A-записи: $(printf '%s,' "$_dns_a_records" | sed 's/,$//') ahosts: $(printf '%s,' "$_dns_ahosts" | sed 's/,$//')"
+
+if [[ -n "$_server_ip" ]] && ! grep -qxF "$_server_ip" <<<"$_dns_resolved_ips"; then
+    dns_diagnostics "Проверка DNS домена" "$DOMAIN" "$_server_ip" "$_dns_ip"
+    die "DNS для $DOMAIN указывает не на этот сервер. Ожидался $_server_ip, найдено: $(printf '%s' "$_dns_resolved_ips" | tr '\n' ' ' | sed 's/ $//')."
 fi
-if [[ -n "$_server_ip" && "$_dns_ip" != "$_server_ip" ]]; then
-    die "DNS для $DOMAIN указывает на $_dns_ip, а не на этот сервер ($_server_ip). Проверьте A-запись. A-записи: $(printf '%s,' "$_dns_a_records" | sed 's/,$//') ahosts: $(printf '%s,' "$_dns_ahosts" | sed 's/,$//')"
-fi
-success "DNS: $DOMAIN → $_dns_ip"
+success "DNS: $DOMAIN → ${_dns_ip:-'(не найден)'}"
+
+check_port_free() {
+    local port="$1"
+    local listeners
+    if port_is_listening "$port"; then
+        listeners=$(port_listeners "$port")
+        warn "[DEBUG] Порт ${port} занят:"
+        printf '%s\n' "$listeners" | sed 's/^/[DEBUG]   /'
+        die "Порт ${port}/tcp уже занят. Освободите его перед установкой selfsteal."
+    fi
+}
+
+check_port_free 80
+check_port_free 443
 
 info "Запускаю selfsteal Caddy для домена $DOMAIN..."
 selfsteal_tmp_dir=$(mktemp -d)
 trap 'rm -rf "$selfsteal_tmp_dir"' EXIT
 selfsteal_installer="${selfsteal_tmp_dir}/selfsteal.sh"
 selfsteal_log="${selfsteal_tmp_dir}/selfsteal.log"
+
+ensure_dns "Скачивание selfsteal installer" "github.com"
 
 curl -fsSL https://github.com/DigneZzZ/remnawave-scripts/raw/main/selfsteal.sh \
     -o "$selfsteal_installer" \
@@ -43,6 +78,15 @@ if ! TERM=dumb bash "$selfsteal_installer" @ --debug --force --domain "$DOMAIN" 
     sed 's/^/[SELFSTEAL] /' "$selfsteal_log" | tail -n 80
     die "Ошибка установки selfsteal Caddy."
 fi
+
+caddy_runtime_diagnostics() {
+    warn "[DEBUG] docker ps -a | grep ${CADDY_CONTAINER}"
+    docker ps -a --filter "name=${CADDY_CONTAINER}" 2>&1 | sed 's/^/[DEBUG]   /' || true
+    warn "[DEBUG] docker logs --tail 200 ${CADDY_CONTAINER}"
+    docker logs --tail 200 "$CADDY_CONTAINER" 2>&1 | sed 's/^/[DEBUG]   /' || true
+    warn "[DEBUG] ss -lntp | grep ':80\\|:443'"
+    ss -lntp 2>/dev/null | grep -E ':(80|443)\b' | sed 's/^/[DEBUG]   /' || true
+}
 
 info "Жду сертификат Let's Encrypt от Caddy (до 60 с)..."
 _cert_found=0
@@ -63,6 +107,7 @@ fi
 if [[ "$_cert_found" -eq 0 ]]; then
     _container_status=$(docker inspect --format '{{.State.Status}}' "$CADDY_CONTAINER" 2>/dev/null || echo "not_found")
     if [[ "$_container_status" == "not_found" ]]; then
+        caddy_runtime_diagnostics
         [[ -s "$selfsteal_log" ]] && sed 's/^/[SELFSTEAL] /' "$selfsteal_log" | tail -n 80
         die "Контейнер $CADDY_CONTAINER не создан. Selfsteal-инсталлер не запустил Caddy."
     fi
@@ -95,6 +140,7 @@ if [[ "$_cert_found" -eq 0 ]]; then
         die "Сервер не может достучаться до Let's Encrypt.
 Проверьте: curl -v https://acme-v02.api.letsencrypt.org/directory"
     else
+        caddy_runtime_diagnostics
         die "Caddy не получил сертификат за 60 с. DNS: $DOMAIN → $_dns_ip. Контейнер: $_container_status."
     fi
 fi
@@ -124,6 +170,7 @@ docker restart 3xui_app 2>/dev/null || true
 SCRIPT
 chmod 700 "$RENEW_SCRIPT"
 
+command_exists crontab || die "Команда crontab не найдена. Установите пакет cron перед продолжением."
 (crontab -l 2>/dev/null | grep -v "caddy-cert-sync" || true; echo "30 4 * * * $RENEW_SCRIPT") | crontab -
 
 success "Selfsteal Caddy установлен. Сертификат: ${CERT_DIR}/fullchain.pem"

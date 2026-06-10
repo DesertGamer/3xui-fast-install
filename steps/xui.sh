@@ -5,6 +5,16 @@ info "Запуск 3x-ui (Docker)..."
 
 mkdir -p "${XUI_DIR}/db" "${XUI_DIR}/cert"
 
+XUI_SERVICE_LIMITS=""
+if truthy "${LOW_POWER_MODE:-0}" && [[ -n "${XUI_CPUS_LIMIT:-}" ]]; then
+    XUI_SERVICE_LIMITS+="    cpus: \"${XUI_CPUS_LIMIT}\"\n"
+fi
+
+XUI_XRAY_LOG_LEVEL="${XUI_LOG_LEVEL:-info}"
+if truthy "${LOW_POWER_MODE:-0}"; then
+    XUI_XRAY_LOG_LEVEL="${XUI_LOG_LEVEL:-warning}"
+fi
+
 # ── docker-compose.yml ───────────────────────────────────────────────────────
 cat > "${XUI_DIR}/docker-compose.yml" <<EOF
 services:
@@ -12,12 +22,13 @@ services:
     image: ghcr.io/mhsanaei/3x-ui:${XUI_VERSION}
     container_name: 3xui_app
     hostname: ${DOMAIN}
+$(printf '%b' "${XUI_SERVICE_LIMITS}")
     volumes:
       - ${XUI_DIR}/db/:/etc/x-ui/
       - ${XUI_DIR}/cert/:/root/cert/
     environment:
       XRAY_VMESS_AEAD_FORCED: "false"
-      XUI_ENABLE_FAIL2BAN: "true"
+      XUI_ENABLE_FAIL2BAN: "${XUI_ENABLE_FAIL2BAN}"
       TZ: "${TZ:-Europe/Moscow}"
     tty: true
     network_mode: host
@@ -84,7 +95,7 @@ SIDS_JSON="[${SIDS_JSON%, }]"
 # ── Xray config ──────────────────────────────────────────────────────────────
 XRAY_CONFIG=$(cat <<__JSON__
 {
-  "log": {"access": "", "dnsLog": false, "error": "", "loglevel": "info"},
+  "log": {"access": "", "dnsLog": false, "error": "", "loglevel": "${XUI_XRAY_LOG_LEVEL}"},
   "api": {"tag": "api", "services": ["HandlerService", "LoggerService", "StatsService"]},
   "inbounds": [{"tag": "api", "listen": "127.0.0.1", "port": $XRAY_API_PORT, "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1"}}],
   "outbounds": [
