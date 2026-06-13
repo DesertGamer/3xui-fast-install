@@ -195,20 +195,23 @@ spinner_run() {
         return $?
     fi
 
-    local frames=('.  ' '.. ' '...') frame_index=0 pid status
+    local frames=('.  ' '.. ' '...') frame_index=0 ticker_pid status
 
-    printf '\r\033[K%s %s' "$label" "${frames[$frame_index]}" >&3
-    "$@" &
-    pid=$!
+    (
+        while :; do
+            frame_index=$(((frame_index + 1) % ${#frames[@]}))
+            printf '\r\033[K%s %s' "$label" "${frames[$frame_index]}" >&3
+            sleep 1
+        done
+    ) &
+    ticker_pid=$!
 
-    while kill -0 "$pid" 2>/dev/null; do
-        frame_index=$(((frame_index + 1) % ${#frames[@]}))
-        printf '\r\033[K%s %s' "$label" "${frames[$frame_index]}" >&3
-        sleep 1
-    done
-
-    wait "$pid"
+    printf '\r\033[K%s %s' "$label" "${frames[0]}" >&3
+    "$@"
     status=$?
+
+    kill "$ticker_pid" 2>/dev/null || true
+    wait "$ticker_pid" 2>/dev/null || true
 
     if [[ $status -eq 0 ]]; then
         printf '\r\033[K%s %s\n' "$label" "done" >&3
