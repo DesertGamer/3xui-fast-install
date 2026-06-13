@@ -5,10 +5,10 @@ info "Установка Docker Engine и Docker Compose..."
 
 get_linux_release() {
     if command -v lsb_release &>/dev/null; then
-        printf '%s\n%s' "$(lsb_release -is | tr '[:upper:]' '[:lower:]')" "$(lsb_release -cs)"
+        printf '%s\n%s\n' "$(lsb_release -is | tr '[:upper:]' '[:lower:]')" "$(lsb_release -cs)"
     elif [[ -r /etc/os-release ]]; then
         . /etc/os-release
-        printf '%s\n%s' "${ID:-}" "${VERSION_CODENAME:-}"
+        printf '%s\n%s\n' "${ID:-}" "${VERSION_CODENAME:-}"
     fi
 }
 
@@ -16,10 +16,13 @@ refresh_docker_keyring() {
     ensure_dns "Установка Docker" "download.docker.com"
     mkdir -p /etc/apt/keyrings
 
+    local distro_id
+    { read -r distro_id; read -r _; } < <(get_linux_release)
+
     local tmp_key
     tmp_key=$(mktemp)
     curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 60 \
-        https://download.docker.com/linux/debian/gpg \
+        "https://download.docker.com/linux/${distro_id}/gpg" \
         -o "$tmp_key" \
         || die "Не удалось скачать ключ Docker."
     gpg --batch --yes --dearmor \
@@ -64,7 +67,7 @@ install_docker_official() {
     ensure_dns "Установка Docker" "download.docker.com"
 
     local distro_id codename
-    read -r distro_id codename < <(get_linux_release)
+    { read -r distro_id; read -r codename; } < <(get_linux_release)
     if [[ -z "$distro_id" || -z "$codename" ]]; then
         die "Не удалось определить Linux release для установки Docker."
     fi

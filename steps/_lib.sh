@@ -46,6 +46,21 @@ command_exists() {
     command -v "$1" &>/dev/null
 }
 
+get_linux_id() {
+    if [[ -r /etc/os-release ]]; then
+        . /etc/os-release
+        printf '%s' "${ID:-}"
+    fi
+}
+
+default_dns_check_domain() {
+    case "$(get_linux_id)" in
+        ubuntu) printf '%s' "archive.ubuntu.com" ;;
+        debian) printf '%s' "deb.debian.org" ;;
+        *)      printf '%s' "deb.debian.org" ;;
+    esac
+}
+
 dns_resolve_ipv4s() {
     local host="$1"
     getent ahosts "$host" 2>/dev/null \
@@ -205,7 +220,7 @@ spinner_run() {
 }
 
 install_packages() {
-    ensure_dns "Установка пакетов" "${DNS_CHECK_DOMAIN:-deb.debian.org}"
+    ensure_dns "Установка пакетов" "${DNS_CHECK_DOMAIN:-$(default_dns_check_domain)}"
     if command_exists apt-get; then
         apt-get update -qq || true
         apt-get install -y --no-install-recommends "$@"
