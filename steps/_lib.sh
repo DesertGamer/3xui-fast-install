@@ -46,7 +46,245 @@ command_exists() {
     command -v "$1" &>/dev/null
 }
 
+get_linux_id() {
+    if [[ -r /etc/os-release ]]; then
+        . /etc/os-release
+        printf '%s' "${ID:-}"
+    fi
+}
+
+default_dns_check_domain() {
+    case "$(get_linux_id)" in
+        ubuntu) printf '%s' "archive.ubuntu.com" ;;
+        debian) printf '%s' "deb.debian.org" ;;
+        *)      printf '%s' "deb.debian.org" ;;
+    esac
+}
+
+dns_resolve_ipv4s() {
+    local host="$1"
+    getent ahosts "$host" 2>/dev/null \
+        | awk '{print $1}' \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        | sort -u || true
+}
+
+doh_resolve_ipv4s() {
+    local host="$1" json
+
+    if command_exists curl; then
+        json=$(curl -fsSL --retry 2 --connect-timeout 5 --max-time 15 \
+            --resolve cloudflare-dns.com:443:1.1.1.1 \
+            -H 'accept: application/dns-json' \
+            "https://cloudflare-dns.com/dns-query?name=${host}&type=A" 2>/dev/null || true)
+    elif command_exists python3; then
+        json=$(python3 - "$host" <<'PY' 2>/dev/null || true
+import json, sys, urllib.request
+import ssl
+import urllib.parse
+host = sys.argv[1]
+req = urllib.request.Request(
+    f"https://1.1.1.1/dns-query?name={urllib.parse.quote(host)}&type=A",
+    headers={
+        "accept": "application/dns-json",
+        "Host": "cloudflare-dns.com",
+    },
+)
+try:
+    ctx = ssl._create_unverified_context()
+    with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+        sys.stdout.write(resp.read().decode())
+except Exception:
+    pass
+PY
+)
+    else
+        json=""
+    fi
+
+    printf '%s\n' "$json" \
+        | grep -oE '"data":"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' \
+        | sed -E 's/^"data":"//; s/"$//' \
+        | sort -u || true
+}
+
+dns_update_hosts_entry() {
+    local host="$1" ip="$2"
+    [[ -n "$host" && -n "$ip" ]] || return 1
+
+    if grep -Eq "^[[:space:]]*${ip//./\\.}[[:space:]]+${host}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
+        return 0
+    fi
+
+    printf '%s %s\n' "$ip" "$host" >> /etc/hosts
+}
+
+port_is_listening() {
+    local port="$1"
+    ss -H -lntp 2>/dev/null | awk -v port=":${port}" '$4 ~ port { found=1 } END { exit(found ? 0 : 1) }'
+}
+
+port_listeners() {
+    local port="$1"
+    ss -H -lntp 2>/dev/null | awk -v port=":${port}" '$4 ~ port { print }' || true
+}
+
+dns_resolv_conf_dump() {
+    if [[ -L /etc/resolv.conf ]]; then
+        echo "symlink -> $(readlink /etc/resolv.conf 2>/dev/null || echo '(unreadable)')"
+    fi
+    if [[ -r /etc/resolv.conf ]]; then
+        sed 's/^/  /' /etc/resolv.conf
+    else
+        echo "  (не удалось прочитать /etc/resolv.conf)"
+    fi
+}
+
+dns_internet_check() {
+    local host port
+    for target in \
+        "1.1.1.1:443" \
+        "1.0.0.1:443" \
+        "8.8.8.8:53" \
+        "9.9.9.9:53"
+    do
+        host="${target%:*}"
+        port="${target#*:}"
+        if timeout 4 bash -c ":</dev/tcp/${host}/${port}" &>/dev/null; then
+            printf '%s' "$target"
+            return 0
+        fi
+    done
+    return 1
+}
+
+dns_restore_resolv_conf() {
+    local backup="/etc/resolv.conf.codex.bak"
+    if [[ -e /etc/resolv.conf && ! -e "$backup" ]]; then
+        cp -a /etc/resolv.conf "$backup" 2>/dev/null || true
+    fi
+
+    if command_exists systemctl && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        systemctl stop systemd-resolved 2>/dev/null || true
+    fi
+
+    rm -f /etc/resolv.conf
+    cat > /etc/resolv.conf <<'EOF'
+# Restored by 3x-ui installer after DNS failure
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+nameserver 9.9.9.9
+options timeout:2 attempts:2 rotate
+EOF
+    chmod 644 /etc/resolv.conf 2>/dev/null || true
+}
+
+dns_diagnostics() {
+    local context="$1" domain="$2" expected="${3:-}" found="${4:-}"
+
+    warn "[DEBUG] ${context}: dig +short A ${domain}"
+    if command_exists dig; then
+        dig +short A "$domain" 2>/dev/null | sed 's/^/[DEBUG]   /' || true
+    else
+        warn "[DEBUG]   dig не установлен"
+    fi
+    warn "[DEBUG] ${context}: getent ahosts ${domain}"
+    getent ahosts "$domain" 2>/dev/null | sed 's/^/[DEBUG]   /' || true
+    warn "[DEBUG] ${context}: expected IP: ${expected:-'(не задан)'}"
+    warn "[DEBUG] ${context}: detected IP: ${found:-'(не найден)'}"
+    warn "[DEBUG] ${context}: /etc/resolv.conf"
+    dns_resolv_conf_dump | sed 's/^/[DEBUG]   /'
+}
+
+ensure_dns() {
+    local context="${1:-network operation}"
+    local domain="${2:-${DNS_CHECK_DOMAIN:-deb.debian.org}}"
+    local internet_target resolved
+
+    if ! internet_target=$(dns_internet_check); then
+        dns_diagnostics "$context" "$domain" "" ""
+        die "${context}: нет доступности интернета по IP. Сначала проверьте маршрутизацию/файрвол/NAT."
+    fi
+
+    resolved=$(dns_resolve_ipv4s "$domain")
+    if [[ -n "$resolved" ]]; then
+        return 0
+    fi
+
+    info "${context}: интернет по IP доступен (${internet_target}), но DNS не резолвит ${domain}. Пытаюсь восстановить /etc/resolv.conf..."
+    dns_restore_resolv_conf
+
+    resolved=$(dns_resolve_ipv4s "$domain")
+    if [[ -n "$resolved" ]]; then
+        success "${context}: DNS восстановлен для ${domain} (${resolved})."
+        return 0
+    fi
+
+    info "${context}: пробую DoH fallback для ${domain}..."
+    resolved=$(doh_resolve_ipv4s "$domain")
+    if [[ -n "$resolved" ]]; then
+        dns_update_hosts_entry "$domain" "$(printf '%s\n' "$resolved" | head -1)" || true
+        resolved=$(dns_resolve_ipv4s "$domain")
+        if [[ -n "$resolved" ]]; then
+            success "${context}: DNS восстановлен через DoH для ${domain} (${resolved})."
+            return 0
+        fi
+    fi
+
+    dns_diagnostics "$context" "$domain" "" "$resolved"
+    die "${context}: DNS остаётся нерабочим после восстановления /etc/resolv.conf."
+}
+
+truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON|y|Y|low|LOW|light|LIGHT|lite|LITE)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+spinner_run() {
+    local label="$1"
+    shift
+
+    # Если fd 3 не подключён к терминалу, просто запускаем команду без анимации.
+    if ! { true >&3; } 2>/dev/null; then
+        "$@"
+        return $?
+    fi
+
+    local frames=('.  ' '.. ' '...') frame_index=0 ticker_pid status
+
+    (
+        while :; do
+            frame_index=$(((frame_index + 1) % ${#frames[@]}))
+            printf '\r\033[K%s %s' "$label" "${frames[$frame_index]}" >&3
+            sleep 1
+        done
+    ) &
+    ticker_pid=$!
+
+    printf '\r\033[K%s %s' "$label" "${frames[0]}" >&3
+    "$@"
+    status=$?
+
+    kill "$ticker_pid" 2>/dev/null || true
+    wait "$ticker_pid" 2>/dev/null || true
+
+    if [[ $status -eq 0 ]]; then
+        printf '\r\033[K%s %s\n' "$label" "done" >&3
+    else
+        printf '\r\033[K%s %s\n' "$label" "failed" >&3
+    fi
+
+    return "$status"
+}
+
 install_packages() {
+    ensure_dns "Установка пакетов" "${DNS_CHECK_DOMAIN:-$(default_dns_check_domain)}"
     if command_exists apt-get; then
         apt-get update -qq || true
         apt-get install -y --no-install-recommends "$@"
@@ -115,6 +353,17 @@ export VLESS_PORT="${VLESS_PORT:-443}"
 export TRAFFIC_RESET="${TRAFFIC_RESET:-monthly}"
 export LOGFILE="${XUI_DIR}/3xui-install.log"
 export XUI_VERSION="3.2.6"
+export LOW_POWER_MODE="${LOW_POWER_MODE:-0}"
+
+if truthy "$LOW_POWER_MODE"; then
+    export XUI_ENABLE_FAIL2BAN="${XUI_ENABLE_FAIL2BAN:-false}"
+    export XUI_LOG_LEVEL="${XUI_LOG_LEVEL:-warning}"
+    export XUI_CPUS_LIMIT="${XUI_CPUS_LIMIT:-0.5}"
+else
+    export XUI_ENABLE_FAIL2BAN="${XUI_ENABLE_FAIL2BAN:-true}"
+    export XUI_LOG_LEVEL="${XUI_LOG_LEVEL:-info}"
+    export XUI_CPUS_LIMIT="${XUI_CPUS_LIMIT:-}"
+fi
 
 export PANEL_PORT="${PANEL_PORT:-60000}"
 export PANEL_USER="${PANEL_USER:-admin}"

@@ -286,8 +286,17 @@ ssh root@<IP> 'bash /root/3xui-setup/restore.sh latest'
 | `HY2_PORT`        | `63000`      | Порт Hysteria2 UDP                                    |
 | `OPERA_REGION`    | `EU`         | Регион для Opera Proxy (`AM`, `EU`, `AS`, и т.д.)     |
 | `TRAFFIC_RESET`   | `monthly`    | Сброс трафика инбаундов (`never`, `daily`, `monthly`) |
+| `LOW_POWER_MODE`  | `0`          | Облегчённый режим для слабых VPS: меньше фоновой нагрузки, ниже лимит CPU контейнера |
 | `SSH_PORT`        | `22`         | SSH-порт сервера                                      |
 | `SSH_USER`        | `root`       | SSH-пользователь                                      |
+
+Если сервер совсем слабый, запустите установку так:
+
+```bash
+LOW_POWER_MODE=1 DOMAIN=vpn.example.com bash install.sh
+```
+
+В этом режиме `3x-ui` не поднимает лишние шумные сервисы, а сам контейнер получает мягкий лимит CPU, чтобы сервер оставался отзывчивым.
 
 Пример с кастомными параметрами:
 

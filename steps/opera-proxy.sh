@@ -6,8 +6,6 @@ info "Установка opera-proxy (Opera VPN / SurfEasy)..."
 OPERA_BIN="/usr/local/bin/opera-proxy"
 OPERA_SERVICE="/etc/systemd/system/opera-proxy.service"
 
-# ── Скачать последнюю версию ─────────────────────────────────────────────────
-info "Определяю последнюю версию opera-proxy..."
 _arch=$(uname -m)
 case "$_arch" in
     x86_64)  _arch_str="linux-amd64" ;;
@@ -16,29 +14,13 @@ case "$_arch" in
     *)       warn "Неподдерживаемая архитектура: $_arch — пропускаю opera-proxy."; exit 0 ;;
 esac
 
-_latest_url=""
-_latest_tag=""
-for _attempt in 1 2 3; do
-    info "Попытка $_attempt: запрашиваю GitHub API..."
-    _api_resp=$(curl -fsSL --max-time 30 \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/Alexey71/opera-proxy/releases/latest" 2>/dev/null) || true
-    _latest_url=$(echo "$_api_resp" \
-        | grep -o '"browser_download_url": *"[^"]*opera-proxy\.'"${_arch_str}"'"' \
-        | grep -o 'https://[^"]*' || true)
-    _latest_tag=$(echo "$_api_resp" \
-        | grep -o '"tag_name": *"[^"]*"' \
-        | grep -o '"[^"]*"$' \
-        | tr -d '"' || true)
-    [[ -n "$_latest_url" ]] && break
-    [[ $_attempt -lt 3 ]] && sleep 5
-done
+ensure_dns "Установка opera-proxy" "github.com"
+ensure_dns "Установка opera-proxy" "release-assets.githubusercontent.com"
+ensure_dns "Установка opera-proxy" "api.github.com"
 
-if [[ -z "$_latest_url" ]]; then
-    warn "Не удалось получить URL релиза opera-proxy (GitHub API недоступен). Пропускаю шаг."
-    warn "Можно установить вручную позже: https://github.com/Alexey71/opera-proxy/releases"
-    exit 0
-fi
+_latest_url="https://github.com/Alexey71/opera-proxy/releases/latest/download/opera-proxy.${_arch_str}"
+_latest_tag="latest"
+info "Скачиваю последнюю версию напрямую: ${_latest_url}"
 
 # Пропустить скачивание, если уже установлена актуальная версия
 _ver_file="/usr/local/share/opera-proxy.version"
@@ -50,7 +32,25 @@ else
 
     mkdir -p "$(dirname "$OPERA_BIN")"
     info "Скачиваю $_latest_url..."
-    curl -fsSL --max-time 120 -o "${OPERA_BIN}.tmp" "$_latest_url" || die "Ошибка скачивания opera-proxy."
+    curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 \
+        -o "${OPERA_BIN}.tmp" "$_latest_url" \
+        || {
+            warn "Direct download не удался, пробую GitHub API..."
+            _api_resp=$(curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/Alexey71/opera-proxy/releases/latest" 2>/dev/null) || true
+            _latest_url=$(echo "$_api_resp" \
+                | grep -o '"browser_download_url": *"[^"]*opera-proxy\.'"${_arch_str}"'"' \
+                | grep -o 'https://[^"]*' || true)
+            _latest_tag=$(echo "$_api_resp" \
+                | grep -o '"tag_name": *"[^"]*"' \
+                | grep -o '"[^"]*"$' \
+                | tr -d '"' || true)
+            [[ -n "$_latest_url" ]] || die "Не удалось скачать opera-proxy: нет доступа ни к direct download, ни к GitHub API."
+            curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 120 \
+                -o "${OPERA_BIN}.tmp" "$_latest_url" \
+                || die "Ошибка скачивания opera-proxy."
+        }
     mv -f "${OPERA_BIN}.tmp" "$OPERA_BIN"
     chmod 755 "$OPERA_BIN"
     [[ -n "$_latest_tag" ]] && echo "$_latest_tag" > "$_ver_file"
