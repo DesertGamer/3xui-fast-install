@@ -43,7 +43,6 @@ _run_step "UFW"         "$SCRIPT_DIR/ufw.sh"
 _run_step "WARP"        "$SCRIPT_DIR/warp.sh"
 _run_step "Opera Proxy" "$SCRIPT_DIR/opera-proxy.sh"
 _run_step "Tor"         "$SCRIPT_DIR/tor.sh"
-_run_step "Docker"      "$SCRIPT_DIR/docker.sh"
 
 if truthy "${LOW_POWER_MODE:-0}"; then
     info "LOW_POWER_MODE: fail2ban-step пропущен, чтобы не нагружать слабый сервер лишним сервисом."
@@ -55,14 +54,15 @@ _run_step "Selfsteal"   "$SCRIPT_DIR/selfsteal.sh"
 _run_step "3x-ui"       "$SCRIPT_DIR/xui.sh"
 
 # ─── Сохраняем доступы ────────────────────────────────────────────────────────
+_cert_path=$(caddy_cert_file)
 cat > /root/3xui-credentials.txt <<CREDS
 Дата установки : $(date '+%Y-%m-%d %H:%M:%S')
-Панель URL     : https://${DOMAIN}:${PANEL_PORT}${PANEL_PATH}
+Панель URL     : https://${DOMAIN}${PANEL_PATH}
 Логин          : ${PANEL_USER}
 Пароль         : ${PANEL_PASS}
-Подписка       : https://${DOMAIN}:${SUB_PORT}${SUB_PATH}${CLIENT_SUB_ID}
+Подписка       : https://${DOMAIN}${SUB_PATH}${CLIENT_SUB_ID}
 Selfsteal      : https://${DOMAIN}
-Сертификат     : ${XUI_DIR}/cert/ssl/fullchain.pem
+Сертификат     : ${_cert_path:-<каталог Caddy: ${CADDY_DATA_DIR}>}
 WARP SOCKS5    : 127.0.0.1:${WARP_PROXY_PORT}
 Opera SOCKS5   : 127.0.0.1:${OPERA_PROXY_PORT} (регион: ${OPERA_REGION})
 Tor SOCKS5     : 127.0.0.1:${TOR_PORT}

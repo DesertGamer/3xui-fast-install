@@ -16,7 +16,6 @@ KEEP="${KEEP:-7}"            # сколько последних бекапов 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_NAME="3xui_${TIMESTAMP}.tar.gz"
 REMOTE_TMP="/tmp/3xui_backup_${TIMESTAMP}.tar.gz"
-COMPOSE_FILE="${XUI_DIR}/docker-compose.yml"
 
 mkdir -p "$BACKUP_DIR"
 
@@ -24,14 +23,16 @@ mkdir -p "$BACKUP_DIR"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR" "$REMOTE_TMP"' EXIT
 
-[[ -d "${XUI_DIR}/db"   ]] && cp -a "${XUI_DIR}/db"   "$TMP_DIR/"
-[[ -d "${XUI_DIR}/cert" ]] && cp -a "${XUI_DIR}/cert" "$TMP_DIR/"
-[[ -f "$COMPOSE_FILE"   ]] && cp    "$COMPOSE_FILE"    "$TMP_DIR/"
+# Нативный x-ui хранит БД и настройки в /etc/x-ui (сертификат — в /var/lib/caddy ниже)
+[[ -d /etc/x-ui ]] && cp -a /etc/x-ui "$TMP_DIR/etc-x-ui"
 
-if [[ -d /opt/caddy ]]; then
-    mkdir -p "$TMP_DIR/caddy"
-    rsync -a --exclude='logs/' /opt/caddy/ "$TMP_DIR/caddy/"
+# Caddy: конфиг, сайт-заглушка и ACME-данные (сертификат)
+if [[ -f /etc/caddy/Caddyfile ]]; then
+    mkdir -p "$TMP_DIR/caddy-etc"
+    cp /etc/caddy/Caddyfile "$TMP_DIR/caddy-etc/"
 fi
+[[ -d /var/www/html  ]] && cp -a /var/www/html  "$TMP_DIR/caddy-www"
+[[ -d /var/lib/caddy ]] && cp -a /var/lib/caddy "$TMP_DIR/caddy-data"
 
 [[ -f /root/3xui-credentials.txt ]] && cp /root/3xui-credentials.txt "$TMP_DIR/"
 

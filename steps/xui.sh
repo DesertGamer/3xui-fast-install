@@ -1,78 +1,119 @@
 # shellcheck source=steps/_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/_lib.sh"
 
-info "Запуск 3x-ui (Docker)..."
+info "Установка 3x-ui..."
 
-ensure_dns "Запуск 3x-ui" "ghcr.io"
-ensure_dns "Запуск 3x-ui" "pkg-containers.githubusercontent.com"
-ensure_dns "Запуск 3x-ui" "github-cloud.githubusercontent.com"
-
-mkdir -p "${XUI_DIR}/db" "${XUI_DIR}/cert"
-
-XUI_SERVICE_LIMITS=""
-if truthy "${LOW_POWER_MODE:-0}" && [[ -n "${XUI_CPUS_LIMIT:-}" ]]; then
-    XUI_SERVICE_LIMITS+="    cpus: \"${XUI_CPUS_LIMIT}\"\n"
+XUI_ARCH=$(xui_arch)
+XUI_TARBALL="x-ui-linux-${XUI_ARCH}.tar.gz"
+# XUI_VERSION=latest → /releases/latest/download (без тега); иначе пин по тегу vX.Y.Z
+if [[ "${XUI_VERSION}" == "latest" ]]; then
+    XUI_URL="https://github.com/MHSanaei/3x-ui/releases/latest/download/${XUI_TARBALL}"
+else
+    XUI_URL="https://github.com/MHSanaei/3x-ui/releases/download/v${XUI_VERSION}/${XUI_TARBALL}"
 fi
+XRAY_BIN="${XUI_NATIVE_DIR}/bin/xray-linux-${XUI_ARCH}"
+
+ensure_dns "Скачивание 3x-ui" "github.com"
+ensure_dns "Скачивание 3x-ui" "objects.githubusercontent.com"
+ensure_dns "Скачивание 3x-ui" "release-assets.githubusercontent.com"
+
+mkdir -p "$XUI_DB_DIR"
 
 XUI_XRAY_LOG_LEVEL="${XUI_LOG_LEVEL:-info}"
 if truthy "${LOW_POWER_MODE:-0}"; then
     XUI_XRAY_LOG_LEVEL="${XUI_LOG_LEVEL:-warning}"
 fi
 
-# ── docker-compose.yml ───────────────────────────────────────────────────────
-cat > "${XUI_DIR}/docker-compose.yml" <<EOF
-services:
-  3xui:
-    image: ghcr.io/mhsanaei/3x-ui:${XUI_VERSION}
-    container_name: 3xui_app
-    hostname: ${DOMAIN}
-$(printf '%b' "${XUI_SERVICE_LIMITS}")
-    volumes:
-      - ${XUI_DIR}/db/:/etc/x-ui/
-      - ${XUI_DIR}/cert/:/root/cert/
-    environment:
-      XRAY_VMESS_AEAD_FORCED: "false"
-      XUI_ENABLE_FAIL2BAN: "${XUI_ENABLE_FAIL2BAN}"
-      TZ: "${TZ:-Europe/Moscow}"
-    tty: true
-    network_mode: host
-    restart: unless-stopped
-EOF
+# Останавливаем сервис, если уже установлен (идемпотентная переустановка)
+systemctl stop x-ui 2>/dev/null || true
 
-# ── Запуск контейнера ────────────────────────────────────────────────────────
-_pull_retries=3
-for _pull_attempt in $(seq 1 "$_pull_retries"); do
-    docker compose -f "${XUI_DIR}/docker-compose.yml" pull && break
-    if [[ "$_pull_attempt" -eq "$_pull_retries" ]]; then
-        die "Не удалось скачать образ 3x-ui после ${_pull_retries} попыток."
+# ── Скачивание релиза с ретраями ─────────────────────────────────────────────
+xui_tmp=$(mktemp -d)
+trap 'rm -rf "$xui_tmp"' EXIT
+
+_dl_retries=3
+for _dl_attempt in $(seq 1 "$_dl_retries"); do
+    curl -fL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 300 \
+        "$XUI_URL" -o "${xui_tmp}/${XUI_TARBALL}" && break
+    if [[ "$_dl_attempt" -eq "$_dl_retries" ]]; then
+        die "Не удалось скачать ${XUI_TARBALL} после ${_dl_retries} попыток (${XUI_URL})."
     fi
-    warn "Попытка ${_pull_attempt}/${_pull_retries} не удалась, повтор через 10с..."
+    warn "Попытка ${_dl_attempt}/${_dl_retries} скачать x-ui не удалась, повтор через 10с..."
     sleep 10
 done
-docker compose -f "${XUI_DIR}/docker-compose.yml" up -d \
-    || die "Не удалось запустить контейнер 3x-ui."
 
-# Ждём появления БД (до 30 сек)
-XUI_DB="${XUI_DIR}/db/x-ui.db"
+# ── Распаковка в /usr/local/x-ui ─────────────────────────────────────────────
+tar -xzf "${xui_tmp}/${XUI_TARBALL}" -C "$xui_tmp" \
+    || die "Не удалось распаковать ${XUI_TARBALL}."
+[[ -d "${xui_tmp}/x-ui" ]] || die "В архиве x-ui нет ожидаемой папки x-ui/."
+
+rm -rf "$XUI_NATIVE_DIR"
+mv "${xui_tmp}/x-ui" "$XUI_NATIVE_DIR"
+chmod +x "${XUI_NATIVE_DIR}/x-ui" "$XRAY_BIN" 2>/dev/null || true
+[[ -x "$XRAY_BIN" ]] || die "Бинарь xray не найден: ${XRAY_BIN}."
+
+# Менеджер-скрипт x-ui для пользователя (start/stop/restart/settings)
+if [[ -f "${XUI_NATIVE_DIR}/x-ui.sh" ]]; then
+    cp -f "${XUI_NATIVE_DIR}/x-ui.sh" /usr/bin/x-ui
+    chmod +x /usr/bin/x-ui
+fi
+
+# ── systemd-сервис ───────────────────────────────────────────────────────────
+if [[ -f "${XUI_NATIVE_DIR}/x-ui.service" ]]; then
+    cp -f "${XUI_NATIVE_DIR}/x-ui.service" /etc/systemd/system/x-ui.service
+else
+    cat > /etc/systemd/system/x-ui.service <<'UNIT'
+[Unit]
+Description=x-ui Service
+After=network.target nss-lookup.target
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/x-ui/
+ExecStart=/usr/local/x-ui/x-ui
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+fi
+
+# Drop-in с переменными окружения (и лимитом CPU в LOW_POWER_MODE)
+mkdir -p /etc/systemd/system/x-ui.service.d
+{
+    printf '[Service]\n'
+    printf 'Environment=XRAY_VMESS_AEAD_FORCED=false\n'
+    printf 'Environment=TZ=%s\n' "${TZ:-Europe/Moscow}"
+    if truthy "${LOW_POWER_MODE:-0}" && [[ -n "${XUI_CPUS_LIMIT:-}" ]]; then
+        printf 'CPUQuota=%s%%\n' "$(awk "BEGIN{printf \"%d\", ${XUI_CPUS_LIMIT}*100}")"
+    fi
+} > /etc/systemd/system/x-ui.service.d/override.conf
+
+systemctl daemon-reload
+systemctl enable x-ui >/dev/null 2>&1 || true
+
+# ── Первый старт: x-ui создаёт БД /etc/x-ui/x-ui.db ──────────────────────────
+systemctl restart x-ui || die "Не удалось запустить сервис x-ui."
+
 for i in $(seq 1 30); do
     [[ -f "$XUI_DB" ]] && break
     sleep 1
 done
 [[ -f "$XUI_DB" ]] || die "БД x-ui не появилась в ${XUI_DB} за 30 секунд."
 
-# ── Reality-ключи (через exec в уже запущенный контейнер) ────────────────────
-_xray_bin=/app/bin/xray-linux-amd64
-
+# ── Reality-ключи (локальный бинарь xray) ────────────────────────────────────
 REALITY_KEYS=""
 for i in $(seq 1 10); do
-    REALITY_KEYS=$(docker exec 3xui_app "$_xray_bin" x25519 2>/dev/null || true)
+    REALITY_KEYS=$("$XRAY_BIN" x25519 2>/dev/null || true)
     [[ "$REALITY_KEYS" == *"PrivateKey"* ]] && break
     REALITY_KEYS=""
     sleep 2
 done
 if [[ -z "$REALITY_KEYS" ]]; then
     warn "Вывод xray x25519:"
-    docker exec 3xui_app "$_xray_bin" x25519 2>&1 || true
+    "$XRAY_BIN" x25519 2>&1 || true
     die "Не удалось сгенерировать Reality-ключи (xray x25519)."
 fi
 REALITY_PRIVATE=$(echo "$REALITY_KEYS" | awk '/PrivateKey:/ {print $2}' | tr -d '[:space:]')
@@ -80,8 +121,8 @@ REALITY_PUBLIC=$(echo "$REALITY_KEYS"  | awk '/Password \(PublicKey\):/ {print $
 [[ -z "$REALITY_PRIVATE" ]] && die "Не удалось извлечь приватный ключ: $REALITY_KEYS"
 [[ -z "$REALITY_PUBLIC"  ]] && die "Не удалось извлечь публичный ключ: $REALITY_KEYS"
 
-# Останавливаем для применения настроек
-docker compose -f "${XUI_DIR}/docker-compose.yml" stop
+# Останавливаем сервис для прямой правки БД
+systemctl stop x-ui || die "Не удалось остановить сервис x-ui перед правкой БД."
 
 # ── sqlite3 ──────────────────────────────────────────────────────────────────
 if ! command_exists sqlite3; then
@@ -99,7 +140,7 @@ SIDS_JSON="[${SIDS_JSON%, }]"
 # ── Xray config ──────────────────────────────────────────────────────────────
 XRAY_CONFIG=$(cat <<__JSON__
 {
-  "log": {"access": "", "dnsLog": false, "error": "", "loglevel": "${XUI_XRAY_LOG_LEVEL}"},
+  "log": {"access": "./access.log", "dnsLog": false, "error": "", "loglevel": "${XUI_XRAY_LOG_LEVEL}"},
   "api": {"tag": "api", "services": ["HandlerService", "LoggerService", "StatsService"]},
   "inbounds": [{"tag": "api", "listen": "127.0.0.1", "port": $XRAY_API_PORT, "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1"}}],
   "outbounds": [
@@ -124,7 +165,7 @@ XRAY_CONFIG=$(cat <<__JSON__
   },
   "stats": {},
   "metrics": {"tag": "metrics"},
-  "dns": {"hosts": {"dns.google": ["8.8.8.8", "8.8.4.4"]}, "servers": [], "queryStrategy": "UseIP", "tag": "dns_inbound"},
+  "dns": {"hosts": {"dns.google": ["8.8.8.8", "8.8.4.4"], "cloudflare-dns.com": ["1.1.1.1", "1.0.0.1"]}, "servers": ["https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query", "8.8.8.8", "1.1.1.1"], "queryStrategy": "UseIP", "tag": "dns_inbound"},
   "fakedns": null
 }
 __JSON__
@@ -148,22 +189,39 @@ xui_db_set() {
 
 sqlite3 "$XUI_DB" "DELETE FROM settings WHERE rowid NOT IN (SELECT MAX(rowid) FROM settings GROUP BY key);"
 
+# Сертификат Caddy — один на всё: панель, подписка, Hysteria2, Trojan-WS. Caddy его
+# выпустил на шаге Selfsteal и сам продлевает на месте; xray/x-ui читают файл напрямую
+# (oneTimeLoading:false у inbound'ов, веб-сервер перечитывает при рестарте x-ui).
+CADDY_CERT_FILE=$(caddy_cert_file)
+CADDY_KEY_FILE=$(caddy_key_file)
+[[ -f "$CADDY_CERT_FILE" && -f "$CADDY_KEY_FILE" ]] \
+    || die "Сертификат Caddy для ${DOMAIN} не найден в ${CADDY_DATA_DIR}. Сначала должен отработать шаг Selfsteal."
+
+# Панель и подписка работают за нативным Caddy на 443 (reverse_proxy по пути).
+# x-ui слушает только localhost. Сертификат зашит (web/subCertFile) → внутри 3x-ui
+# работает кнопка «взять сертификат панели», а x-ui отдаёт HTTPS на localhost —
+# поэтому Caddy проксирует на https-бэкенд (см. steps/selfsteal.sh).
 xui_db_set webPort            "$PANEL_PORT"
-xui_db_set webDomain          "$DOMAIN"
+xui_db_set webListen          "127.0.0.1"
+xui_db_set webDomain          ""
 xui_db_set webBasePath        "$PANEL_PATH"
 xui_db_set subPort            "$SUB_PORT"
-xui_db_set subDomain          "$DOMAIN"
+xui_db_set subListen          "127.0.0.1"
+xui_db_set subDomain          ""
 xui_db_set subEnable          "true"
 xui_db_set subJsonEnable      "false"
 xui_db_set subTitle           "$SUB_TITLE"
 xui_db_set subPath            "$SUB_PATH"
+xui_db_set subURI             "https://${DOMAIN}${SUB_PATH}"
 xui_db_set subUpdates         "1"
 xui_db_set subRoutingRules    "$ROUTING"
+xui_db_set subEnableRouting   "true"
 xui_db_set xrayTemplateConfig "$XRAY_CONFIG_1L"
-xui_db_set webCertFile        "${CERT_DIR}/fullchain.pem"
-xui_db_set webKeyFile         "${CERT_DIR}/privkey.pem"
-xui_db_set subCertFile        "${CERT_DIR}/fullchain.pem"
-xui_db_set subKeyFile         "${CERT_DIR}/privkey.pem"
+# Сертификат Caddy для панели и подписки (HTTPS на localhost + кнопка в UI).
+xui_db_set webCertFile        "$CADDY_CERT_FILE"
+xui_db_set webKeyFile         "$CADDY_KEY_FILE"
+xui_db_set subCertFile        "$CADDY_CERT_FILE"
+xui_db_set subKeyFile         "$CADDY_KEY_FILE"
 
 # ── VLESS Reality ────────────────────────────────────────────────────────────
 # В новой версии 3x-ui клиенты хранятся в отдельных таблицах clients/client_inbounds/client_traffics
@@ -191,8 +249,22 @@ sqlite3 "$XUI_DB" \
 # ── Hysteria2 ─────────────────────────────────────────────────────────────────
 HY2_OBFS_PASS=$(random_alnum 32)
 
+# Сертификат для Hysteria2 — общий с панелью/подпиской/Trojan (CADDY_CERT_FILE выше).
+HY2_CERT_FILE="$CADDY_CERT_FILE"
+HY2_KEY_FILE="$CADDY_KEY_FILE"
+
 HYSTERIA2_SETTINGS="{\"clients\":[],\"version\":2}"
-HYSTERIA2_STREAM="{\"network\":\"hysteria\",\"security\":\"tls\",\"externalProxy\":[],\"tlsSettings\":{\"serverName\":\"$DOMAIN\",\"minVersion\":\"1.2\",\"maxVersion\":\"1.3\",\"cipherSuites\":\"\",\"rejectUnknownSni\":true,\"disableSystemRoot\":false,\"enableSessionResumption\":true,\"certificates\":[{\"certificateFile\":\"${CERT_DIR}/fullchain.pem\",\"keyFile\":\"${CERT_DIR}/privkey.pem\",\"oneTimeLoading\":false,\"usage\":\"encipherment\",\"buildChain\":false}],\"alpn\":[\"h3\"],\"echServerKeys\":\"\",\"settings\":{\"fingerprint\":\"firefox\",\"echConfigList\":\"\"}},\"hysteriaSettings\":{\"version\":2,\"auth\":\"$CLIENT_HY2_AUTH\",\"udpIdleTimeout\":60,\"masquerade\":{\"type\":\"proxy\",\"dir\":\"\",\"url\":\"twitch.tv\",\"rewriteHost\":true,\"insecure\":false,\"content\":\"\",\"headers\":{},\"statusCode\":0}},\"finalmask\":{\"udp\":[{\"type\":\"salamander\",\"settings\":{\"password\":\"${HY2_OBFS_PASS}\"}}],\"quicParams\":{\"congestion\":\"bbr\"}}}"
+# quicParams: при включённом port hopping добавляем udpHop (диапазон портов + интервал
+# переключения). Этот форк Xray поддерживает hopping нативно и прокидывает его в ссылку
+# клиента. ports в udpHop — через дефис (63000-63999), поэтому конвертируем из start:end.
+# Интервал переключения фиксированный (сек, формат min-max).
+HY2_HOP_INTERVAL="5-10"
+if truthy "$HY2_HOP"; then
+    HY2_QUIC_PARAMS="{\"congestion\":\"bbr\",\"udpHop\":{\"ports\":\"${HY2_HOP_RANGE/:/-}\",\"interval\":\"${HY2_HOP_INTERVAL}\"}}"
+else
+    HY2_QUIC_PARAMS="{\"congestion\":\"bbr\"}"
+fi
+HYSTERIA2_STREAM="{\"network\":\"hysteria\",\"security\":\"tls\",\"externalProxy\":[],\"tlsSettings\":{\"serverName\":\"$DOMAIN\",\"minVersion\":\"1.2\",\"maxVersion\":\"1.3\",\"cipherSuites\":\"\",\"rejectUnknownSni\":true,\"disableSystemRoot\":false,\"enableSessionResumption\":true,\"certificates\":[{\"certificateFile\":\"${HY2_CERT_FILE}\",\"keyFile\":\"${HY2_KEY_FILE}\",\"oneTimeLoading\":false,\"usage\":\"encipherment\",\"buildChain\":false}],\"alpn\":[\"h3\"],\"echServerKeys\":\"\",\"settings\":{\"fingerprint\":\"firefox\",\"echConfigList\":\"\"}},\"hysteriaSettings\":{\"version\":2,\"auth\":\"$CLIENT_HY2_AUTH\",\"udpIdleTimeout\":60,\"masquerade\":{\"type\":\"proxy\",\"dir\":\"\",\"url\":\"twitch.tv\",\"rewriteHost\":true,\"insecure\":false,\"content\":\"\",\"headers\":{},\"statusCode\":0}},\"finalmask\":{\"udp\":[{\"type\":\"salamander\",\"settings\":{\"password\":\"${HY2_OBFS_PASS}\"}}],\"quicParams\":${HY2_QUIC_PARAMS}}}"
 HYSTERIA2_SNIFFING='{"enabled":true,"destOverride":["http","tls","quic","fakedns"],"metadataOnly":false,"routeOnly":false}'
 
 HYSTERIA2_SE_SQL="${HYSTERIA2_SETTINGS//\'/\'\'}"
@@ -204,33 +276,64 @@ sqlite3 "$XUI_DB" \
      VALUES (1,0,0,0,'Hy2',1,0,'${TRAFFIC_RESET}','',${HY2_PORT},'hysteria','${HYSTERIA2_SE_SQL}','${HYSTERIA2_SS_SQL}','in-${HY2_PORT}-udp','${HYSTERIA2_SN_SQL}');" \
     || die "Ошибка INSERT Hysteria2 inbound в БД"
 
+# ── Trojan-WS за 443 (через Caddy) ─────────────────────────────────────────────
+# Инбаунд слушает только localhost, транспорт ws, БЕЗ TLS: реальный TLS приходит на
+# 443 (VLESS Reality steal → Caddy на 9443), Caddy по секретному пути TROJAN_WS_PATH
+# проксирует апгрейд WebSocket сюда. Отдельный порт наружу не открывается.
+# externalProxy: инбаунд слушает localhost:TROJAN_PORT без TLS, но в подписке/ссылке
+# адрес должен быть публичным DOMAIN:443 с TLS (вход через Reality steal → Caddy).
+# forceTls:tls заставляет x-ui сгенерировать tls-ссылку; host в wsSettings даёт корректный
+# Host/SNI (Caddy v2 пробрасывает исходный Host на бэкенд, так что путь данных сходится).
+TROJAN_SETTINGS="{\"clients\":[]}"
+TROJAN_STREAM="{\"network\":\"ws\",\"security\":\"none\",\"externalProxy\":[{\"forceTls\":\"tls\",\"dest\":\"${DOMAIN}\",\"port\":${VLESS_PORT},\"remark\":\"\",\"sni\":\"${DOMAIN}\",\"fingerprint\":\"firefox\",\"alpn\":[\"h2\",\"http/1.1\"]}],\"wsSettings\":{\"acceptProxyProtocol\":false,\"path\":\"${TROJAN_WS_PATH}\",\"host\":\"${DOMAIN}\",\"headers\":{},\"heartbeatPeriod\":0}}"
+TROJAN_SNIFFING='{"enabled":true,"destOverride":["http","tls","quic","fakedns"],"metadataOnly":false,"routeOnly":false}'
+
+TROJAN_SE_SQL="${TROJAN_SETTINGS//\'/\'\'}"
+TROJAN_SS_SQL="${TROJAN_STREAM//\'/\'\'}"
+TROJAN_SN_SQL="${TROJAN_SNIFFING//\'/\'\'}"
+
+sqlite3 "$XUI_DB" \
+    "INSERT INTO inbounds (user_id,up,down,total,remark,enable,expiry_time,traffic_reset,listen,port,protocol,settings,stream_settings,tag,sniffing)
+     VALUES (1,0,0,0,'Trojan WS',1,0,'${TRAFFIC_RESET}','127.0.0.1',${TROJAN_PORT},'trojan','${TROJAN_SE_SQL}','${TROJAN_SS_SQL}','in-${TROJAN_PORT}-tcp','${TROJAN_SN_SQL}');" \
+    || die "Ошибка INSERT Trojan-WS inbound в БД"
+
 # ── Клиент (новая структура: clients + client_inbounds + client_traffics) ─────
 CLIENT_EMAIL_SQL=$(sql_escape "$CLIENT_EMAIL")
 CLIENT_UUID_SQL=$(sql_escape "$CLIENT_UUID")
 CLIENT_SUB_ID_SQL=$(sql_escape "$CLIENT_SUB_ID")
 CLIENT_HY2_AUTH_SQL=$(sql_escape "$CLIENT_HY2_AUTH")
+CLIENT_TROJAN_PASS_SQL=$(sql_escape "$CLIENT_TROJAN_PASS")
 NOW_MS=$(date +%s)000
 
+# Конфиг xray x-ui генерирует из таблиц clients/client_inbounds, а не из settings-JSON.
+# Поэтому пароль Trojan ОБЯЗАТЕЛЬНО в колонку clients.password (как uuid для VLESS и
+# auth для HY2) — иначе trojan-клиент стартует с пустым паролем и не работает, пока
+# инбаунд не пересохранят в админке.
 sqlite3 "$XUI_DB" \
-    "INSERT INTO clients (email,sub_id,uuid,auth,flow,security,limit_ip,total_gb,expiry_time,enable,tg_id,group_name,comment,reset,created_at,updated_at)
-     VALUES ('${CLIENT_EMAIL_SQL}','${CLIENT_SUB_ID_SQL}','${CLIENT_UUID_SQL}','${CLIENT_HY2_AUTH_SQL}','xtls-rprx-vision','auto',0,0,0,1,0,'','',0,${NOW_MS},${NOW_MS});
+    "INSERT INTO clients (email,sub_id,uuid,password,auth,flow,security,limit_ip,total_gb,expiry_time,enable,tg_id,group_name,comment,reset,created_at,updated_at)
+     VALUES ('${CLIENT_EMAIL_SQL}','${CLIENT_SUB_ID_SQL}','${CLIENT_UUID_SQL}','${CLIENT_TROJAN_PASS_SQL}','${CLIENT_HY2_AUTH_SQL}','xtls-rprx-vision','auto',0,0,0,1,0,'','',0,${NOW_MS},${NOW_MS});
      INSERT INTO client_inbounds (client_id,inbound_id,flow_override,created_at)
      VALUES ((SELECT id FROM clients WHERE email='${CLIENT_EMAIL_SQL}'),(SELECT id FROM inbounds WHERE tag='in-${VLESS_PORT}-tcp'),'xtls-rprx-vision',${NOW_MS});
      INSERT INTO client_inbounds (client_id,inbound_id,flow_override,created_at)
      VALUES ((SELECT id FROM clients WHERE email='${CLIENT_EMAIL_SQL}'),(SELECT id FROM inbounds WHERE tag='in-${HY2_PORT}-udp'),'',${NOW_MS});
+     INSERT INTO client_inbounds (client_id,inbound_id,flow_override,created_at)
+     VALUES ((SELECT id FROM clients WHERE email='${CLIENT_EMAIL_SQL}'),(SELECT id FROM inbounds WHERE tag='in-${TROJAN_PORT}-tcp'),'',${NOW_MS});
      INSERT INTO client_traffics (inbound_id,enable,email,up,down,expiry_time,total,reset)
      VALUES ((SELECT id FROM inbounds WHERE tag='in-${VLESS_PORT}-tcp'),1,'${CLIENT_EMAIL_SQL}',0,0,0,0,0);" \
     || die "Ошибка INSERT клиента в БД"
 
 # ── Добавление клиента в settings инбаундов (3x-ui ищет клиентов в JSON) ─────
-CLIENT_JSON="{\"id\":\"${CLIENT_UUID}\",\"auth\":\"${CLIENT_HY2_AUTH}\",\"flow\":\"xtls-rprx-vision\",\"security\":\"auto\",\"email\":\"${CLIENT_EMAIL}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":0,\"subId\":\"${CLIENT_SUB_ID}\",\"comment\":\"\",\"reset\":0,\"created_at\":${NOW_MS},\"updated_at\":${NOW_MS},\"password\":\"\"}"
+# Один JSON клиента на все протоколы: VLESS читает id+flow, Hysteria2 — auth,
+# Trojan — password; лишние поля каждый протокол игнорирует.
+CLIENT_JSON="{\"id\":\"${CLIENT_UUID}\",\"auth\":\"${CLIENT_HY2_AUTH}\",\"flow\":\"xtls-rprx-vision\",\"security\":\"auto\",\"email\":\"${CLIENT_EMAIL}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":0,\"subId\":\"${CLIENT_SUB_ID}\",\"comment\":\"\",\"reset\":0,\"created_at\":${NOW_MS},\"updated_at\":${NOW_MS},\"password\":\"${CLIENT_TROJAN_PASS}\"}"
 CLIENT_JSON_SQL=$(sql_escape "$CLIENT_JSON")
 sqlite3 "$XUI_DB" \
     "UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${VLESS_PORT}-tcp';
-     UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${HY2_PORT}-udp';" \
+     UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${HY2_PORT}-udp';
+     UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${TROJAN_PORT}-tcp';" \
     || die "Ошибка обновления settings инбаундов с клиентом"
 
-# ── Хэш пароля (до старта контейнера) ───────────────────────────────────────
+# ── Хэш пароля (до старта сервиса) ──────────────────────────────────────────
 if ! command_exists htpasswd; then
     die "htpasswd не найден. Установите prereqs или добавьте apache2-utils вручную."
 fi
@@ -238,16 +341,17 @@ PANEL_PASS_HASH=$(htpasswd -bnBC 10 "" "$PANEL_PASS" | tr -d ':\n') \
     || die "Не удалось сгенерировать bcrypt-хэш пароля."
 [[ -n "$PANEL_PASS_HASH" ]] || die "bcrypt-хэш пустой."
 
-# Ждём появления таблицы users в БД (контейнер ещё остановлен)
-# Таблица уже должна быть — она создаётся при первом старте выше
+# Таблица users уже должна быть — она создаётся при первом старте выше
+# (сервис x-ui сейчас остановлен для прямой правки БД).
 PANEL_USER_SQL=$(sql_escape "$PANEL_USER")
 PANEL_PASS_HASH_SQL=$(sql_escape "$PANEL_PASS_HASH")
 sqlite3 "$XUI_DB" \
     "UPDATE users SET username='${PANEL_USER_SQL}', password='${PANEL_PASS_HASH_SQL}' WHERE id=1;" \
     || die "Не удалось задать логин/пароль в БД."
 
-# ── Финальный старт (один раз, без рестарта) ─────────────────────────────────
-docker compose -f "${XUI_DIR}/docker-compose.yml" up -d \
-    || die "Не удалось запустить контейнер 3x-ui."
+# ── Финальный старт ──────────────────────────────────────────────────────────
+systemctl start x-ui || die "Не удалось запустить сервис x-ui."
 sleep 3
-success "3x-ui запущен. Управление: docker compose -f ${XUI_DIR}/docker-compose.yml"
+systemctl is-active --quiet x-ui \
+    || die "Сервис x-ui не активен после старта. Проверьте: journalctl -u x-ui -n 100"
+success "3x-ui запущен (нативно). Управление: x-ui  |  systemctl {status,restart,stop} x-ui"

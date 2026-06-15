@@ -13,7 +13,6 @@ set -euo pipefail
 
 XUI_DIR="/root"
 BACKUP_DIR="${BACKUP_DIR:-/root/backups}"
-COMPOSE_FILE="${XUI_DIR}/docker-compose.yml"
 
 # ─── Выбор файла ─────────────────────────────────────────────────────────────
 ARG="${1:-}"
@@ -59,38 +58,51 @@ read -rp "Продолжить? [y/N] " CONFIRM
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "[INFO] Останавливаю контейнеры..."
-if [[ -f "$COMPOSE_FILE" ]]; then
-    docker compose -f "$COMPOSE_FILE" down 2>/dev/null || true
-fi
-docker stop caddy-selfsteal 2>/dev/null || true
+echo "[INFO] Останавливаю сервисы..."
+systemctl stop x-ui 2>/dev/null || true
+systemctl stop caddy 2>/dev/null || true
 
 echo "[INFO] Распаковываю архив..."
 tar -xzf "$BACKUP_FILE" -C "$TMP_DIR"
 
-if [[ -d "$TMP_DIR/db" ]]; then
-    echo "[INFO] Восстанавливаю ${XUI_DIR}/db/..."
-    mkdir -p "${XUI_DIR}/db"
-    cp -a "$TMP_DIR/db/." "${XUI_DIR}/db/"
+# Нативный x-ui: БД в /etc/x-ui. Поддерживаем и старый формат бекапа (db/).
+if [[ -d "$TMP_DIR/etc-x-ui" ]]; then
+    echo "[INFO] Восстанавливаю /etc/x-ui/..."
+    mkdir -p /etc/x-ui
+    cp -a "$TMP_DIR/etc-x-ui/." /etc/x-ui/
+elif [[ -d "$TMP_DIR/db" ]]; then
+    echo "[INFO] Восстанавливаю БД из старого бекапа (db/) в /etc/x-ui/..."
+    mkdir -p /etc/x-ui
+    cp -a "$TMP_DIR/db/." /etc/x-ui/
 fi
 
+# Сертификат восстанавливается вместе с ACME-данными Caddy (/var/lib/caddy) ниже.
+# Старый формат бекапа с cert/ совместимости ради копируем в /root/cert (не обязателен).
 if [[ -d "$TMP_DIR/cert" ]]; then
-    echo "[INFO] Восстанавливаю ${XUI_DIR}/cert/..."
+    echo "[INFO] Восстанавливаю устаревший ${XUI_DIR}/cert/ (из старого бекапа)..."
     mkdir -p "${XUI_DIR}/cert"
     cp -a "$TMP_DIR/cert/." "${XUI_DIR}/cert/"
     find "${XUI_DIR}/cert" \( -name "*.key" -o -name "privkey.pem" \) -exec chmod 600 {} +
     find "${XUI_DIR}/cert" \( \( -name "*.pem" ! -name "privkey.pem" \) -o -name "*.crt" \) -exec chmod 644 {} +
 fi
 
-if [[ -f "$TMP_DIR/docker-compose.yml" ]]; then
-    echo "[INFO] Восстанавливаю docker-compose.yml..."
-    cp "$TMP_DIR/docker-compose.yml" "$COMPOSE_FILE"
+# Caddy: конфиг, сайт-заглушка и ACME-данные
+if [[ -f "$TMP_DIR/caddy-etc/Caddyfile" ]]; then
+    echo "[INFO] Восстанавливаю /etc/caddy/Caddyfile..."
+    mkdir -p /etc/caddy
+    cp "$TMP_DIR/caddy-etc/Caddyfile" /etc/caddy/Caddyfile
 fi
-
-if [[ -d "$TMP_DIR/caddy" ]]; then
-    echo "[INFO] Восстанавливаю /opt/caddy/..."
-    mkdir -p /opt/caddy
-    cp -a "$TMP_DIR/caddy/." /opt/caddy/
+if [[ -d "$TMP_DIR/caddy-www" ]]; then
+    echo "[INFO] Восстанавливаю /var/www/html/..."
+    mkdir -p /var/www/html
+    cp -a "$TMP_DIR/caddy-www/." /var/www/html/
+    id caddy &>/dev/null && chown -R caddy:caddy /var/www/html 2>/dev/null || true
+fi
+if [[ -d "$TMP_DIR/caddy-data" ]]; then
+    echo "[INFO] Восстанавливаю /var/lib/caddy/ (сертификат ACME)..."
+    mkdir -p /var/lib/caddy
+    cp -a "$TMP_DIR/caddy-data/." /var/lib/caddy/
+    id caddy &>/dev/null && chown -R caddy:caddy /var/lib/caddy 2>/dev/null || true
 fi
 
 if [[ -f "$TMP_DIR/3xui-credentials.txt" ]]; then
@@ -98,10 +110,11 @@ if [[ -f "$TMP_DIR/3xui-credentials.txt" ]]; then
     cp "$TMP_DIR/3xui-credentials.txt" /root/3xui-credentials.txt
 fi
 
-echo "[INFO] Запускаю контейнеры..."
-if [[ -f "$COMPOSE_FILE" ]]; then
-    docker compose -f "$COMPOSE_FILE" up -d
-fi
+echo "[INFO] Запускаю сервисы..."
+systemctl start caddy 2>/dev/null && echo "[OK] Caddy запущен." \
+    || echo "[WARN] не удалось запустить caddy (установлен ли он?)."
+systemctl start x-ui 2>/dev/null && echo "[OK] 3x-ui запущен." \
+    || echo "[WARN] не удалось запустить x-ui (установлен ли он?)."
 
 echo
 echo "[OK] Восстановление завершено из: $(basename "$BACKUP_FILE")"

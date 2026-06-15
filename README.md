@@ -1,14 +1,14 @@
 # 3x-ui Fast install Setup
 
-Личный VPN-сервер под ключ за один запуск. Скрипты разворачивают 3x-ui, VLESS Reality, Hysteria2, selfsteal Caddy, Cloudflare WARP, Opera Proxy, Tor, BBR, UFW и fail2ban, а затем сразу выдают готовые доступы к панели.
+Личный VPN-сервер под ключ за один запуск. Скрипты разворачивают 3x-ui, VLESS Reality, Hysteria2, Trojan-WS, selfsteal Caddy, Cloudflare WARP, Opera Proxy, Tor, BBR, UFW и fail2ban, а затем сразу выдают готовые доступы к панели.
 
 ## Что вы получаете
 
-- Готовый 3x-ui в Docker с автозапуском после перезагрузки сервера.
-- Два протокола из коробки: VLESS Reality и Hysteria2.
-- Первый клиент создаётся автоматически сразу в обоих inbound'ах.
+- Готовый 3x-ui, установленный нативно (бинарь + systemd-сервис `x-ui`) с автозапуском после перезагрузки сервера.
+- Три протокола из коробки: VLESS Reality, Hysteria2 и Trojan-WS (спрятан за `443` через Caddy).
+- Первый клиент создаётся автоматически сразу во всех inbound'ах.
 - Персональная ссылка подписки сохраняется в файле доступов.
-- Сертификаты Let's Encrypt через Caddy selfsteal.
+- Сертификаты ACME через Caddy selfsteal: основной CA — ZeroSSL, фолбэк — Let's Encrypt.
 - Раздельную маршрутизацию: RU-трафик через WARP, выбранные зарубежные сервисы через Opera Proxy, `.onion` через Tor, остальное напрямую.
 - Настроенный фаервол, BBR и базовую защиту fail2ban.
 - Backup/restore-скрипты для переноса и восстановления сервера.
@@ -39,15 +39,16 @@ bash deploy.sh 1.2.3.4
 
 | Компонент           | Что делает                                                                                  |
 | ------------------- | ------------------------------------------------------------------------------------------- |
-| **3x-ui**           | Панель управления Xray в Docker, inbound'ы VLESS Reality и Hysteria2                        |
+| **3x-ui**           | Панель управления Xray (systemd-сервис `x-ui`), inbound'ы VLESS Reality, Hysteria2 и Trojan-WS |
 | **VLESS + Reality** | Основной TCP-вход, по умолчанию на `443`, с fallback-маскировкой через Caddy                |
 | **Hysteria2**       | UDP-вход поверх TLS, по умолчанию на `63000/udp`, хорошо переживает мобильные сети и потери |
-| **Caddy selfsteal** | Получает Let's Encrypt сертификат и держит fallback-маскировку                              |
+| **Trojan-WS**       | TCP-вход поверх WebSocket+TLS на `443`. Слушает только `127.0.0.1`, наружу не торчит: трафик приходит через Reality-steal → Caddy по секретному пути. Неотличим от обычного HTTPS |
+| **Caddy selfsteal** | Получает ACME-сертификат (основной CA — ZeroSSL, фолбэк — Let's Encrypt) и держит fallback-маскировку |
 | **Cloudflare WARP** | Локальный SOCKS5 outbound для RU-ресурсов                                                   |
-| **Opera Proxy**     | Локальный SOCKS5 outbound для выбранных зарубежных сервисов                                 |
+| **Opera Proxy**     | Локальный SOCKS5 outbound для выбранных зарубежных сервисов                                  |
 | **Tor**             | Локальный SOCKS5 outbound для `.onion` и отдельных Tor-сценариев                            |
 | **BBR**             | TCP congestion control для более стабильной скорости                                        |
-| **UFW**             | Открывает только нужные порты: SSH, 80, Reality, Hysteria2, панель и подписки               |
+| **UFW**             | Открывает только нужные порты: SSH, 80, Reality (443), Hysteria2. Панель, подписки и Trojan-WS наружу не торчат — идут через Caddy на 443 |
 | **fail2ban**        | Базовая защита от перебора                                                                  |
 
 ## Маршрутизация
@@ -67,7 +68,7 @@ GeoIP/GeoSite для клиентов Happ подписки берутся из 
 - Debian 12+ или Ubuntu 22.04+.
 - Root-доступ по SSH.
 - Домен, A-запись которого указывает на IP сервера.
-- Доступные порты: `80/tcp`, порт VLESS Reality (`443/tcp` по умолчанию), порт Hysteria2 (`63000/udp` по умолчанию), порт панели и порт подписок.
+- Доступные порты: `80/tcp`, порт VLESS Reality (`443/tcp` по умолчанию), порт Hysteria2 (`63000/udp` по умолчанию) и при включённом port hopping диапазон `63000:63999/udp`. Панель и подписки доступны на `443` через Caddy, отдельных портов наружу не требуют.
 
 ## Где взять VPS
 
@@ -87,7 +88,17 @@ GeoIP/GeoSite для клиентов Happ подписки берутся из 
 
 ## Где взять домен
 
-Домен нужен для Let's Encrypt сертификата и SNI маскировки Reality. Можно взять бесплатно:
+Домен нужен для ACME-сертификата (ZeroSSL) и SNI маскировки Reality. Можно взять бесплатно:
+
+### ClouDNS (рекомендуется)
+
+**ClouDNS** — бесплатный DNS-хостинг с быстрыми anycast-серверами имён, корректными DNSSEC и CAA. Это важно: именно из-за медленных/сбойных NS у некоторых бесплатных сервисов ACME-валидация (LE/ZeroSSL) падает с `SERVFAIL`/таймаутами по CAA. С ClouDNS таких проблем нет. Можно завести бесплатный поддомен или подключить свой домен:
+
+1. Зарегистрироваться на [ClouDNS](https://www.cloudns.net/aff/id/2414950/)
+2. Создать бесплатный бесплатный поддомен
+3. Добавить A-запись на IP сервера
+
+[Создать домен в ClouDNS](https://www.cloudns.net/aff/id/2414950/)
 
 ### DuckDNS
 
@@ -187,14 +198,52 @@ bash deploy.sh <IP>
 
 ## После установки
 
-- Панель: `https://<DOMAIN>:<PANEL_PORT>/<PANEL_PATH>/`
-- Подписка первого клиента: `https://<DOMAIN>:<SUB_PORT><SUB_PATH>/<CLIENT_SUB_ID>`
+- Панель: `https://<DOMAIN>/<PANEL_PATH>/` (на `443` через Caddy)
+- Подписка первого клиента: `https://<DOMAIN><SUB_PATH><CLIENT_SUB_ID>` (на `443`)
 - VLESS Reality: `<VLESS_PORT>/tcp`, по умолчанию `443/tcp`
 - Hysteria2: `<HY2_PORT>/udp`, по умолчанию `63000/udp`
+  - Port hopping включён по умолчанию. На сервере весь диапазон `HY2_HOP_RANGE` (`63000:63999`) редиректится (NAT) на `HY2_PORT`, а в конфиг инбаунда добавляется `finalmask.quicParams.udpHop` — поэтому диапазон портов и интервал переключения (`5-10` сек) попадают в клиентскую ссылку автоматически, вручную в клиенте ничего вписывать не нужно. Отключить: `HY2_HOP=false`.
+- Trojan-WS: на `443` через Caddy (отдельный порт наружу не открывается). Инбаунд слушает `127.0.0.1:<TROJAN_PORT>` (по умолчанию `8443`) без TLS; клиент подключается на `wss://<DOMAIN>:443<TROJAN_WS_PATH>`, реальный TLS терминирует Caddy. В клиентскую ссылку через `externalProxy` автоматически попадают публичный адрес `443`, SNI, отпечаток и ALPN — вписывать вручную ничего не нужно.
 - Лог установки: `/root/3xui-install.log`
 - Полный лог установки: `/root/3xui-install-full.log`
 - Доступы: `/root/3xui-credentials.txt`
-- Контейнер 3x-ui: `docker compose -f /root/docker-compose.yml [start|stop|restart|logs]`
+- Управление 3x-ui: меню `x-ui` или `systemctl {status|start|stop|restart} x-ui`, логи — `journalctl -u x-ui -f`
+- БД 3x-ui: `/etc/x-ui/x-ui.db`, бинари: `/usr/local/x-ui/`
+
+### Как устроен доступ на 443
+
+Панель, подписка и сайт-маскировка отдаются на одном порту `443`:
+
+```
+клиент ──443──▶ xray (VLESS Reality)
+                   └─ не-Reality трафик ──fallback (PROXY proto)──▶ Caddy :9443
+                                                                       ├─ /<PANEL_PATH>/   → x-ui панель (127.0.0.1:60000)
+                                                                       ├─ /<SUB_PATH>      → x-ui подписки (127.0.0.1:60001)
+                                                                       ├─ /<TROJAN_WS_PATH> → x-ui Trojan-WS (127.0.0.1:8443)
+                                                                       └─ всё остальное    → сайт-заглушка
+```
+
+Так на одном `443` живут панель, подписки, Trojan-WS и сайт-маскировка. Панель и подписки x-ui слушает только на `127.0.0.1` и отдаёт по ним HTTPS (сертификат Caddy зашит в настройки x-ui, чтобы внутри панели работала кнопка «взять сертификат») — Caddy проксирует на них как на локальный HTTPS-бэкенд. Trojan-WS слушает `127.0.0.1` без TLS — публичный TLS даёт Caddy. Наружу открыты лишь `80`, `443` и порт Hysteria2.
+
+### Если панель на 443 не открывается (xray лёг)
+
+Порт `443` держит **xray**, поэтому если xray не запустился (например, из-за ошибки в конфиге), публичный URL панели временно недоступен. При этом **процесс панели x-ui продолжает работать** — xray является его дочерним процессом, и его падение панель не убивает. Восстановить доступ всегда можно по SSH:
+
+1. **Перезапустить сервис** (поднимет и панель, и xray):
+   ```bash
+   ssh root@<IP> 'systemctl restart x-ui'   # или: ssh root@<IP> 'x-ui restart'
+   ```
+2. **Зайти в панель напрямую через SSH-туннель** (панель всегда жива на localhost), чтобы найти и исправить ошибку конфига:
+   ```bash
+   ssh -L 8443:127.0.0.1:60000 root@<IP>
+   # затем в браузере: http://localhost:8443/<PANEL_PATH>/
+   ```
+3. Посмотреть, почему упал xray, — в логах панели:
+   ```bash
+   ssh root@<IP> 'journalctl -u x-ui -n 100 --no-pager'
+   ```
+
+`x-ui` запускается с `Restart=on-failure`, поэтому большинство сбоев self-healing — systemd поднимет панель, а она перезапустит xray.
 
 ## Backup и restore
 
@@ -219,9 +268,9 @@ bash restore.sh <IP> backups/backup_1.2.3.4_20260508_120000.tar.gz
 bash restore.sh <IP> backups/backup_*.tar.gz -i ~/.ssh/id_rsa
 ```
 
-> **Важно:** `restore.sh` рассчитан на сервер с уже установленным окружением (Docker, Tor, WARP, Opera Proxy и пр.). На чистом (новом) сервере сначала выполните `deploy.sh`, а затем запустите `restore.sh` — он заменит данные 3x-ui содержимым бекапа.
+> **Важно:** `restore.sh` рассчитан на сервер с уже установленным окружением (Caddy, Tor, WARP, Opera Proxy и пр.). На чистом (новом) сервере сначала выполните `deploy.sh`, а затем запустите `restore.sh` — он заменит данные 3x-ui содержимым бекапа.
 
-Архив содержит базу 3x-ui, сертификаты, docker-compose файлы, Caddy-конфиг, статические файлы маскировки и файл доступов.
+Архив содержит базу 3x-ui (`/etc/x-ui`), сертификаты, Caddy-конфиг (`/etc/caddy/Caddyfile`), сайт-заглушку (`/var/www/html`), ACME-данные Caddy (`/var/lib/caddy`) и файл доступов.
 
 ### Прямо на сервере (без локальной машины)
 
@@ -271,22 +320,27 @@ ssh root@<IP> 'bash /root/3xui-setup/restore.sh latest'
 | Переменная        | По умолчанию | Описание                                              |
 | ----------------- | ------------ | ----------------------------------------------------- |
 | `DOMAIN`          | —            | Домен для Reality SNI и сертификата                   |
-| `PANEL_PORT`      | `60000`      | Порт панели 3x-ui                                     |
+| `PANEL_PORT`      | `60000`      | Локальный порт панели 3x-ui (за Caddy, на `127.0.0.1`) |
 | `PANEL_USER`      | `admin`      | Логин панели                                          |
 | `PANEL_PASS`      | случайный    | Пароль панели                                         |
 | `PANEL_PATH`      | случайный    | URL-путь панели                                       |
-| `SUB_PORT`        | `60001`      | Порт подписок                                         |
+| `SUB_PORT`        | `60001`      | Локальный порт подписок (за Caddy, на `127.0.0.1`)    |
 | `SUB_PATH`        | `/subs/`     | URL-путь подписок                                     |
 | `SUB_TITLE`       | домен        | Название подписки                                     |
 | `CLIENT_EMAIL`    | случайный    | Имя автоматически созданного клиента                  |
 | `CLIENT_UUID`     | случайный    | UUID VLESS-клиента                                    |
 | `CLIENT_SUB_ID`   | случайный    | ID персональной подписки                              |
 | `CLIENT_HY2_AUTH` | случайный    | Auth-пароль Hysteria2-клиента                         |
+| `CLIENT_TROJAN_PASS` | случайный | Пароль Trojan-WS-клиента                              |
 | `VLESS_PORT`      | `443`        | Порт VLESS Reality                                    |
+| `TROJAN_PORT`     | `8443`       | Локальный порт Trojan-WS (на `127.0.0.1`, за Caddy)   |
+| `TROJAN_WS_PATH`  | случайный    | Секретный WS-путь Trojan (по нему Caddy проксирует на инбаунд) |
 | `HY2_PORT`        | `63000`      | Порт Hysteria2 UDP                                    |
+| `HY2_HOP`         | `true`       | Port hopping для Hysteria2 (NAT-редирект диапазона UDP-портов на `HY2_PORT`) |
+| `HY2_HOP_RANGE`   | `63000:63999`| Диапазон портов для hopping (формат `start:end`)      |
 | `OPERA_REGION`    | `EU`         | Регион для Opera Proxy (`AM`, `EU`, `AS`, и т.д.)     |
 | `TRAFFIC_RESET`   | `monthly`    | Сброс трафика инбаундов (`never`, `daily`, `monthly`) |
-| `LOW_POWER_MODE`  | `0`          | Облегчённый режим для слабых VPS: меньше фоновой нагрузки, ниже лимит CPU контейнера |
+| `LOW_POWER_MODE`  | `0`          | Облегчённый режим для слабых VPS: меньше фоновой нагрузки, ниже лимит CPU сервиса `x-ui` (CPUQuota) |
 | `SSH_PORT`        | `22`         | SSH-порт сервера                                      |
 | `SSH_USER`        | `root`       | SSH-пользователь                                      |
 
@@ -296,7 +350,7 @@ ssh root@<IP> 'bash /root/3xui-setup/restore.sh latest'
 LOW_POWER_MODE=1 DOMAIN=vpn.example.com bash install.sh
 ```
 
-В этом режиме `3x-ui` не поднимает лишние шумные сервисы, а сам контейнер получает мягкий лимит CPU, чтобы сервер оставался отзывчивым.
+В этом режиме `3x-ui` не поднимает лишние шумные сервисы, а сам сервис `x-ui` получает мягкий лимит CPU (systemd `CPUQuota`), чтобы сервер оставался отзывчивым.
 
 Пример с кастомными параметрами:
 
@@ -338,10 +392,9 @@ bash install.sh
     ├── warp.sh         # Cloudflare WARP
     ├── opera-proxy.sh  # Opera Proxy
     ├── tor.sh          # Tor
-    ├── docker.sh       # Docker
     ├── fail2ban.sh     # fail2ban
-    ├── selfsteal.sh    # Caddy selfsteal и Let's Encrypt
-    ├── xui.sh          # 3x-ui, Reality-ключи, Xray config, БД
+    ├── selfsteal.sh    # Caddy selfsteal и ACME-сертификат
+    ├── xui.sh          # 3x-ui (нативно из релиза + systemd), Reality-ключи, Xray config, БД
     ├── backup.sh       # Серверный бекап в /root/backups/
     └── restore.sh      # Восстановление из бекапа на сервере
 ```

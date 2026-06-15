@@ -37,9 +37,9 @@ REMOTE_ENV_VARS=(
     DOMAIN
     PANEL_PORT PANEL_USER PANEL_PASS PANEL_PATH
     SUB_PORT SUB_PATH SUB_TITLE
-    CLIENT_EMAIL CLIENT_UUID CLIENT_SUB_ID CLIENT_HY2_AUTH
-    OPERA_REGION HY2_PORT
-    VLESS_PORT TRAFFIC_RESET
+    CLIENT_EMAIL CLIENT_UUID CLIENT_SUB_ID CLIENT_HY2_AUTH CLIENT_TROJAN_PASS
+    OPERA_REGION HY2_PORT HY2_HOP HY2_HOP_RANGE
+    VLESS_PORT TROJAN_PORT TROJAN_WS_PATH TRAFFIC_RESET
 )
 remote_env_assignments=()
 for var_name in "${REMOTE_ENV_VARS[@]}"; do
@@ -121,22 +121,26 @@ if ssh -t "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" \
     ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" "cat /root/3xui-credentials.txt 2>/dev/null || echo '(файл доступов не найден)'"
 
     # ─── Healthcheck ──────────────────────────────────────────────────────────
+    # Проверяем ЛОКАЛЬНЫЙ HTTPS-бэкенд x-ui (минует hairpin NAT: курлить публичный
+    # домен с самого сервера ненадёжно — многие VPS не маршрутизируют свой же IP).
     echo
     info "Проверяю доступность панели..."
     _hc_code=$(ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" bash <<'HCHECK' 2>/dev/null || echo error
-creds=/root/3xui-credentials.txt
-[[ -f "$creds" ]] || { echo no_creds; exit 0; }
-panel_url=$(awk -F': +' '/Панель URL/ {print $2}' "$creds" | tr -d ' \r')
-[[ -z "$panel_url" ]] && { echo no_url; exit 0; }
-curl -sk --max-time 15 "$panel_url" -o /dev/null -w "%{http_code}" 2>/dev/null || echo 000
+db=/etc/x-ui/x-ui.db
+command -v sqlite3 >/dev/null 2>&1 || { echo no_sqlite; exit 0; }
+[[ -f "$db" ]] || { echo no_db; exit 0; }
+port=$(sqlite3 "$db" "SELECT value FROM settings WHERE key='webPort';" 2>/dev/null)
+base=$(sqlite3 "$db" "SELECT value FROM settings WHERE key='webBasePath';" 2>/dev/null)
+[[ -z "$port" ]] && { echo no_port; exit 0; }
+curl -sk --max-time 15 "https://127.0.0.1:${port}${base}" -o /dev/null -w "%{http_code}" 2>/dev/null || echo 000
 HCHECK
     )
     if [[ "$_hc_code" =~ ^[23][0-9]{2}$ ]]; then
-        success "Панель отвечает (HTTP ${_hc_code})."
-    elif [[ "$_hc_code" == "no_creds" || "$_hc_code" == "no_url" ]]; then
-        warn "Не удалось прочитать URL панели для healthcheck."
+        success "Панель (локально) отвечает: HTTP ${_hc_code}. Снаружи открывайте по URL из доступов."
+    elif [[ "$_hc_code" == no_* ]]; then
+        warn "Healthcheck пропущен (${_hc_code}). Проверьте панель по URL из доступов вручную."
     else
-        warn "Панель не отвечает (код: ${_hc_code}). Возможно, нужно подождать запуска контейнера."
+        warn "Локальный бэкенд панели не отвечает (код: ${_hc_code}). Проверьте: systemctl status x-ui; journalctl -u x-ui -n 100"
     fi
 else
     echo

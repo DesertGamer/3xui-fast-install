@@ -73,7 +73,7 @@
 
 ### Единственный разрешённый способ что-либо сделать — запустить скрипт
 
-Всё — Docker, контейнеры, конфиги, БД, сертификаты, маршрутизация — создаётся **только через скрипты**:
+Всё — нативные сервисы `x-ui` и `caddy`, конфиги, БД, сертификаты, маршрутизация — создаётся **только через скрипты**:
 
 - установка → `deploy.sh`
 - отдельный шаг → `steps/<name>.sh` через `ssh root@IP 'bash /root/3xui-setup/<name>.sh'`
@@ -85,10 +85,10 @@
 
 Следующие действия **запрещены**, даже если кажется, что это самый быстрый путь:
 
-- `docker exec` для изменения конфигов внутри контейнера
+- ручная правка `/etc/caddy/Caddyfile` или `/var/www/html` в обход скрипта
 - `nano`, `vim`, `sed`, `echo >`, `tee` для редактирования файлов на сервере
-- `docker compose up/down/restart` вручную
-- `sqlite3` напрямую для изменения базы
+- `systemctl start/stop/restart x-ui` или `caddy` вручную для правки конфигурации
+- `sqlite3` напрямую для изменения базы `/etc/x-ui/x-ui.db`
 - создание файлов сертификатов, compose-файлов, конфигов руками
 - любая команда `rm -rf`, `git reset --hard` без явного запроса пользователя
 
@@ -112,7 +112,7 @@
 ❌ «Файл credentials не создан, давайте запустим шаг с 3x-ui вручную»  
 ✅ Прочитай лог, найди ошибку, перезапусти через скрипт: `ssh root@<IP> 'DOMAIN=<DOMAIN> bash /root/3xui-setup/xui.sh'`
 
-❌ «Установка не завершена, давайте исправим конфиг docker-compose.yml»  
+❌ «Установка не завершена, давайте исправим конфиг x-ui / Caddyfile»  
 ✅ Никогда не правь конфиг вручную. Перезапусти `deploy.sh`.
 
 ---
@@ -125,7 +125,7 @@ ssh-keygen -R <IP>
 ```
 
 - Не печатай пароль панели в публичный чат или лог, если пользователь не просит.
-- Не запускай `restore.sh` без явного подтверждения пользователя: восстановление заменяет текущую БД, сертификаты, compose-файлы и данные Caddy.
+- Не запускай `restore.sh` без явного подтверждения пользователя: восстановление заменяет текущую БД (`/etc/x-ui`), сертификаты и данные Caddy.
 
 ## Проверки перед запуском
 
@@ -214,28 +214,31 @@ SSH_PORT=2222 DOMAIN=myvpn.duckdns.org bash deploy.sh 1.2.3.4 -i ~/.ssh/id_rsa
 На сервере должны быть:
 
 ```bash
-docker ps
+systemctl is-active x-ui     # активный сервис панели 3x-ui (нативно)
+systemctl is-active caddy    # активный сервис Caddy selfsteal (нативно)
 ```
 
-Ожидаемые контейнеры:
+Ожидаемые сервисы:
 
-- `caddy-selfsteal`
-- `3xui_app`
+- `x-ui` — systemd-сервис панели 3x-ui (нативная установка)
+- `caddy` — systemd-сервис Caddy для сертификата и маскировки (нативная установка)
 
 Файлы:
 
 - `/root/3xui-credentials.txt`
 - `/root/3xui-install.log`
 - `/root/3xui-install-full.log`
-- `/root/docker-compose.yml`
-- `/root/cert/ssl/fullchain.pem`
-- `/root/cert/ssl/privkey.pem`
+- `/etc/x-ui/x-ui.db`
+- `/usr/local/x-ui/` (бинари x-ui и xray)
+- сертификат — в каталоге Caddy `/var/lib/caddy/.local/share/caddy/certificates/…/<DOMAIN>/` (его выпускает и продлевает Caddy; xray читает напрямую оттуда, копии в `/root/cert` больше нет)
 
-Панель:
+Панель (на `443` через Caddy, без отдельного порта):
 
 ```text
-https://<DOMAIN>:<PANEL_PORT>/<PANEL_PATH>/
+https://<DOMAIN>/<PANEL_PATH>/
 ```
+
+> Панель, подписки и сайт-маскировка отдаются на одном порту `443`: xray (Reality) на 443 отдаёт не-Reality трафик в Caddy (`:9443`), а Caddy проксирует `/<PANEL_PATH>/` и `/<SUB_PATH>` на локальный x-ui (`127.0.0.1:60000/60001`), остальное — на сайт-заглушку. Если xray лёг, панель временно недоступна на 443, но жива на `127.0.0.1:60000` — чини через `systemctl restart x-ui` или SSH-туннель `ssh -L 8443:127.0.0.1:60000 root@<IP>`.
 
 Клиент:
 
@@ -256,16 +259,16 @@ ssh root@<IP> 'tail -n 200 /root/3xui-install-full.log'
 ssh root@<IP> 'cat /root/3xui-install.log'
 ```
 
-Проверь контейнеры:
+Проверь сервисы панели и Caddy:
 
 ```bash
-ssh root@<IP> 'docker ps -a'
+ssh root@<IP> 'systemctl --no-pager status x-ui caddy'
 ```
 
-Проверь сервисы:
+Проверь все сервисы:
 
 ```bash
-ssh root@<IP> 'systemctl --no-pager status docker warp-svc opera-proxy tor fail2ban'
+ssh root@<IP> 'systemctl --no-pager status x-ui caddy warp-svc opera-proxy tor fail2ban'
 ```
 
 Проверь firewall:
@@ -349,28 +352,22 @@ ssh root@<IP> 'DOMAIN=<DOMAIN> bash /root/3xui-setup/selfsteal.sh'
 Caddy не получил сертификат за 60 секунд
 ```
 
-Если установка зависает на этапе Selfsteal, сначала посмотри подробные логи Caddy внутри контейнера:
+Если установка зависает на этапе Selfsteal, сначала посмотри подробные логи Caddy (journald):
 
 ```bash
-ssh root@<IP> 'docker logs --tail 150 caddy-selfsteal'
+ssh root@<IP> 'journalctl -u caddy --no-pager -n 150'
 ```
 
-Если логов мало или они обрезаны, можно посмотреть ещё больше:
+Если сервис только что стартовал и нужен живой поток логов:
 
 ```bash
-ssh root@<IP> 'docker logs caddy-selfsteal 2>&1 | tail -200'
-```
-
-Если контейнер только что стартовал и может давать больше контекста:
-
-```bash
-ssh root@<IP> 'docker logs -f caddy-selfsteal'
+ssh root@<IP> 'journalctl -u caddy -f'
 ```
 
 Дополнительно проверь:
 
 ```bash
-ssh root@<IP> 'docker logs --tail 80 caddy-selfsteal'
+ssh root@<IP> 'systemctl --no-pager status caddy'
 ssh root@<IP> 'ufw status verbose'
 dig +short A <DOMAIN>
 ```
@@ -380,7 +377,7 @@ dig +short A <DOMAIN>
 - порт `80/tcp` закрыт у провайдера или firewall
 - DNS ещё не обновился
 - домен указывает не на этот IP
-- превышен rate limit Let's Encrypt
+- превышен rate limit
 - неправильный домен в переменной `DOMAIN`
 
 ### 3x-ui не стартует
@@ -388,14 +385,14 @@ dig +short A <DOMAIN>
 Проверь:
 
 ```bash
-ssh root@<IP> 'docker compose -f /root/docker-compose.yml ps'
-ssh root@<IP> 'docker compose -f /root/docker-compose.yml logs --tail 120'
+ssh root@<IP> 'systemctl --no-pager status x-ui'
+ssh root@<IP> 'journalctl -u x-ui -n 120 --no-pager'
 ```
 
 Если нет БД:
 
 ```bash
-ssh root@<IP> 'ls -la /root/db /root/db/x-ui.db'
+ssh root@<IP> 'ls -la /etc/x-ui /etc/x-ui/x-ui.db'
 ```
 
 ## Авто-бэкап при повторном деплое
@@ -419,7 +416,7 @@ Enter или `y` — запустится `backup.sh`, архив сохрани
 Предлагай или выполняй backup перед:
 
 - повторным запуском установки на уже настроенном сервере
-- ручным исправлением `/root/docker-compose.yml`, `/root/db/`, `/root/cert/` или `/opt/caddy/`
+- ручным исправлением `/etc/x-ui/`, `/usr/local/x-ui/`, `/etc/caddy/`, `/var/www/html/` или `/var/lib/caddy/`
 - восстановлением из старого архива
 - обновлением скриптов, если есть риск затронуть текущую конфигурацию
 
@@ -434,23 +431,21 @@ BACKUP_DIR=~/backups bash backup.sh <IP>
 
 Что делает `backup.sh`:
 
-- временно останавливает compose-файл 3x-ui, чтобы БД не менялась во время копирования
-- собирает архив на сервере
+- собирает архив на сервере (копирует `/etc/x-ui`, сертификаты, Caddy-конфиг и др.)
 - скачивает архив локально в `backups/` или в `BACKUP_DIR`
 - удаляет временный архив из `/tmp` на сервере
 
 Архив должен содержать:
 
-- `db/` — база 3x-ui
+- `etc-x-ui/` — база и настройки 3x-ui (`/etc/x-ui`)
 - `cert/` — сертификаты
-- `docker-compose.yml` — compose 3x-ui
 - `caddy/` — selfsteal Caddy без логов
 - `3xui-credentials.txt` — файл доступов, если он есть
 
-После backup сообщи пользователю путь к архиву и размер файла. Если команда упала, проверь SSH-доступ, наличие Docker/compose и свободное место:
+После backup сообщи пользователю путь к архиву и размер файла. Если команда упала, проверь SSH-доступ и свободное место:
 
 ```bash
-ssh root@<IP> 'df -h / /tmp; docker ps -a; ls -la /root /opt/caddy 2>/dev/null'
+ssh root@<IP> 'df -h / /tmp; systemctl is-active x-ui caddy; ls -la /etc/x-ui /etc/caddy /var/www/html 2>/dev/null'
 ```
 
 ### Когда делать restore
@@ -487,36 +482,34 @@ SSH_PORT=2222 bash restore.sh <IP> backups/backup_<IP>_<YYYYMMDD_HHMMSS>.tar.gz
 Что делает `restore.sh`:
 
 - загружает архив в `/tmp` на сервер
-- останавливает 3x-ui и `caddy-selfsteal`
-- восстанавливает `/root/db`, `/root/cert`, `/root/docker-compose.yml`, `/opt/caddy` и `/root/3xui-credentials.txt`
+- останавливает сервисы `x-ui` и `caddy`
+- восстанавливает `/etc/x-ui`, `/etc/caddy/Caddyfile`, `/var/www/html`, `/var/lib/caddy` (сертификат) и `/root/3xui-credentials.txt` (старые архивы с `db/`/`cert/` тоже понимает)
 - выставляет безопасные права на приватные ключи и файл доступов
-- запускает контейнеры обратно
+- запускает сервисы `caddy` и `x-ui` обратно
 - удаляет временный архив с сервера
 
 ### Проверки после restore
 
-Проверь контейнеры:
+Проверь сервисы:
 
 ```bash
-ssh root@<IP> 'docker ps -a'
-ssh root@<IP> 'docker compose -f /root/docker-compose.yml ps'
-ssh root@<IP> 'docker compose -f /opt/caddy/docker-compose.yml ps 2>/dev/null || docker ps --filter name=caddy-selfsteal'
+ssh root@<IP> 'systemctl --no-pager status x-ui caddy'
 ```
 
 Проверь, что файл доступов и БД на месте:
 
 ```bash
-ssh root@<IP> 'ls -lh /root/3xui-credentials.txt /root/db/x-ui.db'
+ssh root@<IP> 'ls -lh /root/3xui-credentials.txt /etc/x-ui/x-ui.db'
 ```
 
 Проверь логи при ошибках:
 
 ```bash
-ssh root@<IP> 'docker compose -f /root/docker-compose.yml logs --tail 120'
-ssh root@<IP> 'docker logs --tail 120 caddy-selfsteal'
+ssh root@<IP> 'journalctl -u x-ui -n 120 --no-pager'
+ssh root@<IP> 'journalctl -u caddy -n 120 --no-pager'
 ```
 
-Если restore переносится на сервер с другим доменом, IP или портами, не считай это обычным восстановлением. Сначала объясни пользователю, что в архиве лежат старые сертификаты, Caddy-конфигурация, compose-файлы и URL панели; может потребоваться новая установка или ручная правка конфигов.
+Если restore переносится на сервер с другим доменом, IP или портами, не считай это обычным восстановлением. Сначала объясни пользователю, что в архиве лежат старые сертификаты, Caddy-конфигурация и URL панели; может потребоваться новая установка или ручная правка конфигов.
 
 ## Продолжение после частичного успеха
 

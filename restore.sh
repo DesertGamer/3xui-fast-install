@@ -42,25 +42,25 @@ ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SERVER_IP}" \
     XUI_DIR="${XUI_DIR}" REMOTE_TMP="${REMOTE_TMP}" bash <<'REMOTE'
 set -euo pipefail
 
-COMPOSE_FILE="${XUI_DIR}/docker-compose.yml"
-
-# Останавливаем контейнеры
-echo "[INFO] Останавливаю контейнеры..."
-if [[ -f "$COMPOSE_FILE" ]]; then
-    docker compose -f "$COMPOSE_FILE" down 2>/dev/null || true
-fi
-docker stop caddy-selfsteal 2>/dev/null || true
+# Останавливаем сервисы
+echo "[INFO] Останавливаю сервисы..."
+systemctl stop x-ui 2>/dev/null || true
+systemctl stop caddy 2>/dev/null || true
 
 # Распаковываем во временную директорию
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 tar -xzf "$REMOTE_TMP" -C "$TMP_DIR"
 
-# Восстанавливаем БД
-if [[ -d "$TMP_DIR/db" ]]; then
-    echo "[INFO] Восстанавливаю ${XUI_DIR}/db/..."
-    mkdir -p "${XUI_DIR}/db"
-    cp -a "$TMP_DIR/db/." "${XUI_DIR}/db/"
+# Восстанавливаем БД нативного x-ui (/etc/x-ui), с поддержкой старого формата (db/)
+if [[ -d "$TMP_DIR/etc-x-ui" ]]; then
+    echo "[INFO] Восстанавливаю /etc/x-ui/..."
+    mkdir -p /etc/x-ui
+    cp -a "$TMP_DIR/etc-x-ui/." /etc/x-ui/
+elif [[ -d "$TMP_DIR/db" ]]; then
+    echo "[INFO] Восстанавливаю БД из старого бекапа (db/) в /etc/x-ui/..."
+    mkdir -p /etc/x-ui
+    cp -a "$TMP_DIR/db/." /etc/x-ui/
 fi
 
 # Восстанавливаем сертификаты
@@ -72,17 +72,23 @@ if [[ -d "$TMP_DIR/cert" ]]; then
     find "${XUI_DIR}/cert" \( \( -name "*.pem" ! -name "privkey.pem" \) -o -name "*.crt" \) -print | xargs -r chmod 644
 fi
 
-# Восстанавливаем docker-compose.yml
-if [[ -f "$TMP_DIR/docker-compose.yml" ]]; then
-    echo "[INFO] Восстанавливаю docker-compose.yml..."
-    cp "$TMP_DIR/docker-compose.yml" "$COMPOSE_FILE"
+# Восстанавливаем Caddy (конфиг, сайт-заглушка, ACME-данные)
+if [[ -f "$TMP_DIR/caddy-etc/Caddyfile" ]]; then
+    echo "[INFO] Восстанавливаю /etc/caddy/Caddyfile..."
+    mkdir -p /etc/caddy
+    cp "$TMP_DIR/caddy-etc/Caddyfile" /etc/caddy/Caddyfile
 fi
-
-# Восстанавливаем /opt/caddy (Caddyfile, .env, docker-compose.yml, html/)
-if [[ -d "$TMP_DIR/caddy" ]]; then
-    echo "[INFO] Восстанавливаю /opt/caddy/..."
-    mkdir -p /opt/caddy
-    rsync -a "$TMP_DIR/caddy/" /opt/caddy/
+if [[ -d "$TMP_DIR/caddy-www" ]]; then
+    echo "[INFO] Восстанавливаю /var/www/html/..."
+    mkdir -p /var/www/html
+    cp -a "$TMP_DIR/caddy-www/." /var/www/html/
+    id caddy &>/dev/null && chown -R caddy:caddy /var/www/html 2>/dev/null || true
+fi
+if [[ -d "$TMP_DIR/caddy-data" ]]; then
+    echo "[INFO] Восстанавливаю /var/lib/caddy/ (сертификат ACME)..."
+    mkdir -p /var/lib/caddy
+    cp -a "$TMP_DIR/caddy-data/." /var/lib/caddy/
+    id caddy &>/dev/null && chown -R caddy:caddy /var/lib/caddy 2>/dev/null || true
 fi
 
 # Восстанавливаем файл доступов
@@ -99,18 +105,10 @@ if [[ -f "$TMP_DIR/ufw-user.rules" ]] && command -v ufw &>/dev/null; then
     ufw reload && echo "[OK] UFW правила восстановлены."
 fi
 
-# Стартуем контейнеры
-echo "[INFO] Запускаю контейнеры..."
-if [[ -f "$COMPOSE_FILE" ]]; then
-    docker compose -f "$COMPOSE_FILE" up -d && echo "[OK] 3x-ui запущен."
-fi
-# Caddy selfsteal управляется своим compose-файлом
-CADDY_COMPOSE="/opt/caddy/docker-compose.yml"
-if [[ -f "$CADDY_COMPOSE" ]]; then
-    docker compose -f "$CADDY_COMPOSE" up -d && echo "[OK] caddy-selfsteal запущен."
-elif docker inspect caddy-selfsteal &>/dev/null 2>&1; then
-    docker start caddy-selfsteal && echo "[OK] caddy-selfsteal запущен."
-fi
+# Стартуем сервисы
+echo "[INFO] Запускаю сервисы..."
+systemctl start caddy 2>/dev/null && echo "[OK] Caddy запущен." || echo "[WARN] не удалось запустить caddy (установлен ли он?)."
+systemctl start x-ui 2>/dev/null && echo "[OK] 3x-ui запущен." || echo "[WARN] не удалось запустить x-ui (установлен ли он?)."
 
 rm -f "$REMOTE_TMP"
 echo "[OK] Восстановление завершено."

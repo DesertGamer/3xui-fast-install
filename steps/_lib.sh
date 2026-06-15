@@ -77,27 +77,6 @@ doh_resolve_ipv4s() {
             --resolve cloudflare-dns.com:443:1.1.1.1 \
             -H 'accept: application/dns-json' \
             "https://cloudflare-dns.com/dns-query?name=${host}&type=A" 2>/dev/null || true)
-    elif command_exists python3; then
-        json=$(python3 - "$host" <<'PY' 2>/dev/null || true
-import json, sys, urllib.request
-import ssl
-import urllib.parse
-host = sys.argv[1]
-req = urllib.request.Request(
-    f"https://1.1.1.1/dns-query?name={urllib.parse.quote(host)}&type=A",
-    headers={
-        "accept": "application/dns-json",
-        "Host": "cloudflare-dns.com",
-    },
-)
-try:
-    ctx = ssl._create_unverified_context()
-    with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
-        sys.stdout.write(resp.read().decode())
-except Exception:
-    pass
-PY
-)
     else
         json=""
     fi
@@ -108,15 +87,60 @@ PY
         | sort -u || true
 }
 
+# Удаляет все строки /etc/hosts вида "<ip> <host>" для указанного хоста (с любым IP).
+dns_remove_hosts_entry() {
+    local host="$1"
+    [[ -n "$host" && -f /etc/hosts ]] || return 0
+    local host_re="${host//./\\.}"
+    grep -Eq "^[[:space:]]*[0-9.]+[[:space:]]+${host_re}([[:space:]]|$)" /etc/hosts 2>/dev/null || return 0
+    local _tmp
+    _tmp=$(mktemp)
+    grep -Ev "^[[:space:]]*[0-9.]+[[:space:]]+${host_re}([[:space:]]|$)" /etc/hosts > "$_tmp" 2>/dev/null || true
+    cat "$_tmp" > /etc/hosts
+    rm -f "$_tmp"
+}
+
 dns_update_hosts_entry() {
     local host="$1" ip="$2"
     [[ -n "$host" && -n "$ip" ]] || return 1
 
-    if grep -Eq "^[[:space:]]*${ip//./\\.}[[:space:]]+${host}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
+    # Нужная запись уже есть — ничего не делаем.
+    if grep -Eq "^[[:space:]]*${ip//./\\.}[[:space:]]+${host//./\\.}([[:space:]]|$)" /etc/hosts 2>/dev/null; then
         return 0
     fi
 
+    # Сносим устаревшие записи для этого хоста (с другим IP), чтобы не копить дубли и
+    # не маскировать реальный DNS старым адресом, затем дописываем актуальный маппинг.
+    dns_remove_hosts_entry "$host"
     printf '%s %s\n' "$ip" "$host" >> /etc/hosts
+}
+
+# Сброс локального DNS-кэша (systemd-resolved / nscd), чтобы не получить устаревший
+# ответ после смены A-записи домена.
+dns_flush_cache() {
+    if command_exists resolvectl; then
+        resolvectl flush-caches 2>/dev/null || true
+    elif command_exists systemd-resolve; then
+        systemd-resolve --flush-caches 2>/dev/null || true
+    fi
+    command_exists nscd && nscd -i hosts 2>/dev/null || true
+    return 0
+}
+
+# Резолв A-записей через публичные резолверы, минуя локальный кэш: dig @1.1.1.1/@8.8.8.8
+# плюс DoH. Полезно после смены IP домена, когда локальный резолвер ещё отдаёт старое.
+dns_resolve_ipv4s_public() {
+    local host="$1" out="" r
+    if command_exists dig; then
+        for r in 1.1.1.1 8.8.8.8; do
+            out+="$(dig +short A "$host" "@${r}" +time=3 +tries=1 2>/dev/null \
+                | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"$'\n'
+        done
+    fi
+    out+="$(doh_resolve_ipv4s "$host" || true)"$'\n'
+    printf '%s\n' "$out" \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        | sort -u || true
 }
 
 port_is_listening() {
@@ -190,6 +214,8 @@ dns_diagnostics() {
     fi
     warn "[DEBUG] ${context}: getent ahosts ${domain}"
     getent ahosts "$domain" 2>/dev/null | sed 's/^/[DEBUG]   /' || true
+    warn "[DEBUG] ${context}: публичные резолверы (1.1.1.1/8.8.8.8 + DoH)"
+    dns_resolve_ipv4s_public "$domain" | sed 's/^/[DEBUG]   /' || true
     warn "[DEBUG] ${context}: expected IP: ${expected:-'(не задан)'}"
     warn "[DEBUG] ${context}: detected IP: ${found:-'(не найден)'}"
     warn "[DEBUG] ${context}: /etc/resolv.conf"
@@ -322,11 +348,45 @@ sql_escape() {
     printf '%s' "${1//\'/\'\'}"
 }
 
+# Путь к сертификату/ключу, которые Caddy выпускает для домена (ACME).
+# Сначала пробуем детерминированный путь Let's Encrypt, иначе ищем по дереву Caddy.
+caddy_cert_file() {
+    local le="${CADDY_DATA_DIR}/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${DOMAIN}/${DOMAIN}.crt"
+    if [[ -f "$le" ]]; then
+        printf '%s' "$le"
+        return 0
+    fi
+    find "${CADDY_DATA_DIR}" -path "*certificates*/${DOMAIN}/${DOMAIN}.crt" 2>/dev/null | head -1
+}
+
+caddy_key_file() {
+    local crt
+    crt=$(caddy_cert_file)
+    [[ -n "$crt" ]] && printf '%s' "${crt%.crt}.key"
+}
+
 random_alnum() {
     local length="$1" value=""
     value=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c "$length" || true)
     [[ -n "$value" ]] || die "Не удалось сгенерировать случайную строку."
     printf '%s' "$value"
+}
+
+# Архитектура для релизов x-ui (соответствует именованию ассетов MHSanaei/3x-ui).
+xui_arch() {
+    case "$(uname -m)" in
+        x86_64|x64|amd64)            printf 'amd64' ;;
+        i*86|x86)                    printf '386' ;;
+        armv8*|aarch64|arm64)        printf 'arm64' ;;
+        armv7*|armv7|arm)            printf 'armv7' ;;
+        armv6*)                      printf 'armv6' ;;
+        armv5*)                      printf 'armv5' ;;
+        s390x)                       printf 's390x' ;;
+        *)
+            warn "Неизвестная архитектура $(uname -m), пробую amd64."
+            printf 'amd64'
+            ;;
+    esac
 }
 
 random_uuid_v4() {
@@ -346,13 +406,28 @@ export OPERA_PROXY_PORT="40001"
 export TOR_PORT="40002"
 export XRAY_API_PORT="62789"
 export HY2_PORT="${HY2_PORT:-63000}"
+# Port hopping для Hysteria2: клиент прыгает по диапазону UDP-портов, а на сервере
+# весь диапазон редиректится (NAT REDIRECT) на реальный порт HY2_PORT. Помогает
+# против блокировок по одному UDP-порту и троттлинга QUIC.
+export HY2_HOP="${HY2_HOP:-true}"
+export HY2_HOP_RANGE="${HY2_HOP_RANGE:-63000:63999}"
 export OPERA_REGION="${OPERA_REGION:-EU}"
 export XUI_DIR="/root"
-export CERT_DIR="${XUI_DIR}/cert/ssl"
+# Нативная установка x-ui: бинарь в /usr/local/x-ui, БД в /etc/x-ui.
+export XUI_NATIVE_DIR="/usr/local/x-ui"
+export XUI_DB_DIR="/etc/x-ui"
+export XUI_DB="${XUI_DB_DIR}/x-ui.db"
+# Caddy сам выпускает и продлевает сертификат; читаем его напрямую из каталога Caddy.
+export CADDY_DATA_DIR="/var/lib/caddy"
 export VLESS_PORT="${VLESS_PORT:-443}"
+# Trojan-WS спрятан за 443: инбаунд слушает только localhost (ws, без TLS),
+# а Caddy по секретному пути проксирует на него. Снаружи 443 держит VLESS Reality
+# и «крадёт» реальный TLS на Caddy — отдельный публичный порт не нужен и в UFW не
+# открывается. TROJAN_PORT — это внутренний localhost-порт бэкенда.
+export TROJAN_PORT="${TROJAN_PORT:-8443}"
 export TRAFFIC_RESET="${TRAFFIC_RESET:-monthly}"
 export LOGFILE="${XUI_DIR}/3xui-install.log"
-export XUI_VERSION="3.2.6"
+export XUI_VERSION="latest"
 export LOW_POWER_MODE="${LOW_POWER_MODE:-0}"
 
 if truthy "$LOW_POWER_MODE"; then
@@ -375,6 +450,7 @@ export CLIENT_EMAIL="${CLIENT_EMAIL:-}"
 export CLIENT_UUID="${CLIENT_UUID:-}"
 export CLIENT_SUB_ID="${CLIENT_SUB_ID:-}"
 export CLIENT_HY2_AUTH="${CLIENT_HY2_AUTH:-}"
+export CLIENT_TROJAN_PASS="${CLIENT_TROJAN_PASS:-}"
 
 if [[ -z "${PANEL_PASS:-}" ]]; then
     PANEL_PASS=$(random_alnum 18)
@@ -393,6 +469,14 @@ export PANEL_PATH
 [[ "$SUB_PATH" != /* ]]    && SUB_PATH="/${SUB_PATH}"
 [[ "$SUB_PATH" != */ ]]    && SUB_PATH="${SUB_PATH}/"
 export SUB_PATH
+
+# Секретный WS-путь для Trojan-инбаунда (точный путь, без трейлинг-слэша).
+if [[ -z "${TROJAN_WS_PATH:-}" ]]; then
+    TROJAN_WS_PATH=$(random_alnum 10 | tr '[:upper:]' '[:lower:]')
+fi
+[[ "$TROJAN_WS_PATH" != /* ]] && TROJAN_WS_PATH="/${TROJAN_WS_PATH}"
+TROJAN_WS_PATH="${TROJAN_WS_PATH%/}"
+export TROJAN_WS_PATH
 
 if [[ -z "$CLIENT_EMAIL" ]]; then
     CLIENT_EMAIL="$(random_alnum 10)"
@@ -414,17 +498,37 @@ if [[ -z "$CLIENT_HY2_AUTH" ]]; then
     export CLIENT_HY2_AUTH
 fi
 
+if [[ -z "$CLIENT_TROJAN_PASS" ]]; then
+    CLIENT_TROJAN_PASS=$(random_alnum 24)
+    export CLIENT_TROJAN_PASS
+fi
+
 [[ "$CLIENT_EMAIL" =~ ^[A-Za-z0-9._@-]+$ ]] || die "CLIENT_EMAIL может содержать только латиницу, цифры, точку, подчёркивание, @ и дефис."
 [[ "$CLIENT_UUID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || die "CLIENT_UUID должен быть UUID."
 [[ "$CLIENT_SUB_ID" =~ ^[A-Za-z0-9]+$ ]] || die "CLIENT_SUB_ID может содержать только латиницу и цифры."
 [[ "$CLIENT_HY2_AUTH" =~ ^[A-Za-z0-9._@=-]+$ ]] || die "CLIENT_HY2_AUTH может содержать только латиницу, цифры, точку, подчёркивание, @, = и дефис."
+[[ "$CLIENT_TROJAN_PASS" =~ ^[A-Za-z0-9._@=-]+$ ]] || die "CLIENT_TROJAN_PASS может содержать только латиницу, цифры, точку, подчёркивание, @, = и дефис."
 
 for _port_var in \
-    HY2_PORT VLESS_PORT PANEL_PORT SUB_PORT
+    HY2_PORT VLESS_PORT TROJAN_PORT PANEL_PORT SUB_PORT
 do
     validate_port "$_port_var" "${!_port_var}"
 done
 unset _port_var
+
+# Проверяем диапазон port hopping (формат start:end, оба порта валидны, start<=end).
+if truthy "$HY2_HOP"; then
+    [[ "$HY2_HOP_RANGE" =~ ^([0-9]+):([0-9]+)$ ]] \
+        || die "HY2_HOP_RANGE должен быть в формате start:end (например 63000:63999), сейчас: ${HY2_HOP_RANGE}"
+    # Сохраняем группы сразу: validate_port внутри делает свой [[ =~ ]] и затирает BASH_REMATCH.
+    _hop_start="${BASH_REMATCH[1]}"
+    _hop_end="${BASH_REMATCH[2]}"
+    validate_port "HY2_HOP_RANGE (начало)" "$_hop_start"
+    validate_port "HY2_HOP_RANGE (конец)"  "$_hop_end"
+    (( _hop_start <= _hop_end )) \
+        || die "HY2_HOP_RANGE: начало диапазона больше конца (${HY2_HOP_RANGE})."
+    unset _hop_start _hop_end
+fi
 
 if [[ -z "${DOMAIN:-}" ]]; then
     read -rp "Введите домен для selfsteal (например vpn.example.com): " DOMAIN
