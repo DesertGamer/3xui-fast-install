@@ -247,8 +247,6 @@ sqlite3 "$XUI_DB" \
     || die "Ошибка INSERT VLESS Reality inbound в БД"
 
 # ── Hysteria2 ─────────────────────────────────────────────────────────────────
-HY2_OBFS_PASS=$(random_alnum 32)
-
 # Сертификат для Hysteria2 — общий с панелью/подпиской/Trojan (CADDY_CERT_FILE выше).
 HY2_CERT_FILE="$CADDY_CERT_FILE"
 HY2_KEY_FILE="$CADDY_KEY_FILE"
@@ -264,7 +262,7 @@ if truthy "$HY2_HOP"; then
 else
     HY2_QUIC_PARAMS="{\"congestion\":\"bbr\"}"
 fi
-HYSTERIA2_STREAM="{\"network\":\"hysteria\",\"security\":\"tls\",\"externalProxy\":[],\"tlsSettings\":{\"serverName\":\"$DOMAIN\",\"minVersion\":\"1.2\",\"maxVersion\":\"1.3\",\"cipherSuites\":\"\",\"rejectUnknownSni\":true,\"disableSystemRoot\":false,\"enableSessionResumption\":true,\"certificates\":[{\"certificateFile\":\"${HY2_CERT_FILE}\",\"keyFile\":\"${HY2_KEY_FILE}\",\"oneTimeLoading\":false,\"usage\":\"encipherment\",\"buildChain\":false}],\"alpn\":[\"h3\"],\"echServerKeys\":\"\",\"settings\":{\"fingerprint\":\"firefox\",\"echConfigList\":\"\"}},\"hysteriaSettings\":{\"version\":2,\"auth\":\"$CLIENT_HY2_AUTH\",\"udpIdleTimeout\":60,\"masquerade\":{\"type\":\"proxy\",\"dir\":\"\",\"url\":\"twitch.tv\",\"rewriteHost\":true,\"insecure\":false,\"content\":\"\",\"headers\":{},\"statusCode\":0}},\"finalmask\":{\"udp\":[{\"type\":\"salamander\",\"settings\":{\"password\":\"${HY2_OBFS_PASS}\"}}],\"quicParams\":${HY2_QUIC_PARAMS}}}"
+HYSTERIA2_STREAM="{\"network\":\"hysteria\",\"security\":\"tls\",\"externalProxy\":[],\"tlsSettings\":{\"serverName\":\"$DOMAIN\",\"minVersion\":\"1.2\",\"maxVersion\":\"1.3\",\"cipherSuites\":\"\",\"rejectUnknownSni\":true,\"disableSystemRoot\":false,\"enableSessionResumption\":true,\"certificates\":[{\"certificateFile\":\"${HY2_CERT_FILE}\",\"keyFile\":\"${HY2_KEY_FILE}\",\"oneTimeLoading\":false,\"usage\":\"encipherment\",\"buildChain\":false}],\"alpn\":[\"h3\"],\"echServerKeys\":\"\",\"settings\":{\"fingerprint\":\"firefox\",\"echConfigList\":\"\"}},\"hysteriaSettings\":{\"version\":2,\"auth\":\"$CLIENT_HY2_AUTH\",\"udpIdleTimeout\":60,\"masquerade\":{\"type\":\"proxy\",\"dir\":\"\",\"url\":\"twitch.tv\",\"rewriteHost\":true,\"insecure\":false,\"content\":\"\",\"headers\":{},\"statusCode\":0}},\"finalmask\":{\"udp\":[],\"quicParams\":${HY2_QUIC_PARAMS}}}"
 HYSTERIA2_SNIFFING='{"enabled":true,"destOverride":["http","tls","quic","fakedns"],"metadataOnly":false,"routeOnly":false}'
 
 HYSTERIA2_SE_SQL="${HYSTERIA2_SETTINGS//\'/\'\'}"
