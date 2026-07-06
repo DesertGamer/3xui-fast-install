@@ -6,41 +6,33 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m'
 
-# Пишет прогресс в filtered log без ANSI-кодов.
-# При прямом запуске шага также печатает в терминал.
-_print() {
-    local line plain_line
-    line="$*"
-    plain_line=$(printf '%s' "$line" | sed -r 's/\x1b\[[0-9;]*m//g')
+_strip_ansi() { printf '%s' "$*" | sed -r 's/\x1b\[[0-9;]*m//g'; }
+
+# Пишет строку в LOGFILE (без ANSI) и опционально в fd 3 (консоль).
+# force=1 — печатает в консоль даже при STEP_QUIET=1 (для warn/die).
+_log() {
+    local force="${1:-0}"; shift
+    local line="$*"
     if [[ -n "${LOGFILE:-}" ]]; then
-        printf '%s\n' "$plain_line" >>"$LOGFILE"
+        printf '%s\n' "$(_strip_ansi "$line")" >>"$LOGFILE"
     fi
     if { true >&3; } 2>/dev/null; then
-        echo -e "$line" >&3
+        if [[ "$force" == "1" || "${STEP_QUIET:-0}" != "1" ]]; then
+            echo -e "$line" >&3
+        fi
     elif [[ -z "${FULL_LOGFILE:-}" ]]; then
         echo -e "$line"
     fi
 }
 
-info()    { _print "${CYAN}[INFO]${NC}  $*"; }
-success() { _print "${GREEN}[OK]${NC}    $*"; }
-warn()    { _print "${YELLOW}[WARN]${NC}  $*"; }
-die()     {
-    local line plain_line
-    line="${RED}[ERROR]${NC} $*"
-    plain_line=$(printf '%s' "$line" | sed -r 's/\x1b\[[0-9;]*m//g')
-    if [[ -n "${LOGFILE:-}" ]]; then
-        printf '%s\n' "$plain_line" >>"$LOGFILE"
-    fi
-    if { true >&3; } 2>/dev/null; then
-        echo -e "$line" >&3
-    elif [[ -z "${FULL_LOGFILE:-}" ]]; then
-        echo -e "$line" >&2
-    fi
-    exit 1
-}
+info()    { _log 0 "  ${DIM}→${NC}  $*"; }
+success() { _log 0 "  ${GREEN}✓${NC}  $*"; }
+warn()    { _log 1 "  ${YELLOW}⚠${NC}  $*"; }
+die()     { _log 1 "  ${RED}✗${NC}  ${BOLD}$*${NC}"; exit 1; }
 
 command_exists() {
     command -v "$1" &>/dev/null
@@ -276,24 +268,25 @@ spinner_run() {
     local label="$1"
     shift
 
-    # Если fd 3 не подключён к терминалу, просто запускаем команду без анимации.
     if ! { true >&3; } 2>/dev/null; then
         "$@"
         return $?
     fi
 
-    local frames=('.  ' '.. ' '...') frame_index=0 ticker_pid status
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local frame_index=0 ticker_pid status
+    local col=22
 
     (
         while :; do
-            frame_index=$(((frame_index + 1) % ${#frames[@]}))
-            printf '\r\033[K%s %s' "$label" "${frames[$frame_index]}" >&3
-            sleep 1
+            printf '\r  \033[36m%s\033[0m  %-*s' "${frames[$frame_index]}" "$col" "$label" >&3
+            frame_index=$(( (frame_index + 1) % ${#frames[@]} ))
+            sleep 0.1
         done
     ) &
     ticker_pid=$!
 
-    printf '\r\033[K%s %s' "$label" "${frames[0]}" >&3
+    printf '\r  \033[36m%s\033[0m  %-*s' "${frames[0]}" "$col" "$label" >&3
     "$@"
     status=$?
 
@@ -301,9 +294,9 @@ spinner_run() {
     wait "$ticker_pid" 2>/dev/null || true
 
     if [[ $status -eq 0 ]]; then
-        printf '\r\033[K%s %s\n' "$label" "done" >&3
+        printf '\r  \033[32m✓\033[0m  %-*s\n' "$col" "$label" >&3
     else
-        printf '\r\033[K%s %s\n' "$label" "failed" >&3
+        printf '\r  \033[31m✗\033[0m  %-*s\n' "$col" "$label" >&3
     fi
 
     return "$status"
@@ -585,7 +578,7 @@ location_label() {
 detect_country_code() {
     local json code
     if command_exists curl; then
-        json=$(curl -fsSL --retry 2 --connect-timeout 5 --max-time 10 \
+        json=$(curl -fsSL --connect-timeout 3 --max-time 5 \
             "http://ip-api.com/json/?fields=countryCode" 2>/dev/null || true)
         code=$(printf '%s' "$json" | grep -oE '"countryCode":"[A-Z]{2}"' | grep -oE '[A-Z]{2}' || true)
         printf '%s' "$code"

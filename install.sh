@@ -30,21 +30,10 @@ if [[ -z "${DOMAIN:-}" ]]; then
     export DOMAIN
 fi
 
-info "Готовлю steps/*.sh..."
 chmod +x "$STEPS_DIR"/*.sh
 
-echo
-info "Запускаю установку на этом сервере (домен: ${DOMAIN})..."
-info "Прогресс ниже, подробный лог: /root/3xui-install-full.log (Ctrl+C — остановить установку)..."
-echo
-
 if bash "$STEPS_DIR/setup.sh"; then
-    echo
-    success "Установка завершена."
-    echo
-    info "Доступы:"
-    cat /root/3xui-credentials.txt 2>/dev/null || echo "(файл доступов не найден)"
+    true
 else
-    echo
-    die "Установка не завершена. Проверьте лог: /root/3xui-install-full.log"
+    die "Установка не завершена. Лог: /root/3xui-install-full.log"
 fi
