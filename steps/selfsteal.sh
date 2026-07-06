@@ -271,12 +271,6 @@ https://${DOMAIN} {
 			}
 		}
 	}
-	# Trojan-WS по секретному пути → localhost-инбаунд x-ui (ws без TLS).
-	# Caddy сам апгрейдит WebSocket; TLS здесь уже терминирован Caddy.
-	@trojan path ${TROJAN_WS_PATH}
-	handle @trojan {
-		reverse_proxy 127.0.0.1:${TROJAN_PORT}
-	}
 	# Всё остальное → сайт-заглушка (selfsteal)
 	handle {
 		encode gzip

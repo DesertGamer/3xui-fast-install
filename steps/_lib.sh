@@ -413,11 +413,6 @@ export XUI_DB="${XUI_DB_DIR}/x-ui.db"
 # Caddy сам выпускает и продлевает сертификат; читаем его напрямую из каталога Caddy.
 export CADDY_DATA_DIR="/var/lib/caddy"
 export VLESS_PORT="${VLESS_PORT:-443}"
-# Trojan-WS спрятан за 443: инбаунд слушает только localhost (ws, без TLS),
-# а Caddy по секретному пути проксирует на него. Снаружи 443 держит VLESS Reality
-# и «крадёт» реальный TLS на Caddy — отдельный публичный порт не нужен и в UFW не
-# открывается. TROJAN_PORT — это внутренний localhost-порт бэкенда.
-export TROJAN_PORT="${TROJAN_PORT:-8443}"
 export TRAFFIC_RESET="${TRAFFIC_RESET:-monthly}"
 export LOGFILE="${XUI_DIR}/3xui-install.log"
 export XUI_VERSION="latest"
@@ -443,7 +438,6 @@ export CLIENT_EMAIL="${CLIENT_EMAIL:-}"
 export CLIENT_UUID="${CLIENT_UUID:-}"
 export CLIENT_SUB_ID="${CLIENT_SUB_ID:-}"
 export CLIENT_HY2_AUTH="${CLIENT_HY2_AUTH:-}"
-export CLIENT_TROJAN_PASS="${CLIENT_TROJAN_PASS:-}"
 
 if [[ -z "${PANEL_PASS:-}" ]]; then
     PANEL_PASS=$(random_alnum 18)
@@ -462,14 +456,6 @@ export PANEL_PATH
 [[ "$SUB_PATH" != /* ]]    && SUB_PATH="/${SUB_PATH}"
 [[ "$SUB_PATH" != */ ]]    && SUB_PATH="${SUB_PATH}/"
 export SUB_PATH
-
-# Секретный WS-путь для Trojan-инбаунда (точный путь, без трейлинг-слэша).
-if [[ -z "${TROJAN_WS_PATH:-}" ]]; then
-    TROJAN_WS_PATH=$(random_alnum 10 | tr '[:upper:]' '[:lower:]')
-fi
-[[ "$TROJAN_WS_PATH" != /* ]] && TROJAN_WS_PATH="/${TROJAN_WS_PATH}"
-TROJAN_WS_PATH="${TROJAN_WS_PATH%/}"
-export TROJAN_WS_PATH
 
 if [[ -z "$CLIENT_EMAIL" ]]; then
     CLIENT_EMAIL="$(random_alnum 10)"
@@ -491,19 +477,13 @@ if [[ -z "$CLIENT_HY2_AUTH" ]]; then
     export CLIENT_HY2_AUTH
 fi
 
-if [[ -z "$CLIENT_TROJAN_PASS" ]]; then
-    CLIENT_TROJAN_PASS=$(random_alnum 24)
-    export CLIENT_TROJAN_PASS
-fi
-
 [[ "$CLIENT_EMAIL" =~ ^[A-Za-z0-9._@-]+$ ]] || die "CLIENT_EMAIL может содержать только латиницу, цифры, точку, подчёркивание, @ и дефис."
 [[ "$CLIENT_UUID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || die "CLIENT_UUID должен быть UUID."
 [[ "$CLIENT_SUB_ID" =~ ^[A-Za-z0-9]+$ ]] || die "CLIENT_SUB_ID может содержать только латиницу и цифры."
 [[ "$CLIENT_HY2_AUTH" =~ ^[A-Za-z0-9._@=-]+$ ]] || die "CLIENT_HY2_AUTH может содержать только латиницу, цифры, точку, подчёркивание, @, = и дефис."
-[[ "$CLIENT_TROJAN_PASS" =~ ^[A-Za-z0-9._@=-]+$ ]] || die "CLIENT_TROJAN_PASS может содержать только латиницу, цифры, точку, подчёркивание, @, = и дефис."
 
 for _port_var in \
-    HY2_PORT VLESS_PORT TROJAN_PORT PANEL_PORT SUB_PORT
+    HY2_PORT VLESS_PORT PANEL_PORT SUB_PORT
 do
     validate_port "$_port_var" "${!_port_var}"
 done

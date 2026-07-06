@@ -53,6 +53,13 @@ fi
 _run_step "Selfsteal"    "$SCRIPT_DIR/selfsteal.sh"
 _run_step "3x-ui"        "$SCRIPT_DIR/xui.sh"
 
+# Читаем plaintext API-токен — xui.sh сохранил его в файл (недоступен через export из подпроцесса)
+_api_token=""
+if [[ -f /root/.xui_api_token ]]; then
+    _api_token=$(cat /root/.xui_api_token)
+    rm -f /root/.xui_api_token
+fi
+
 # Сохраняем доступы
 _cert_path=$(caddy_cert_file)
 cat > /root/3xui-credentials.txt <<CREDS
@@ -60,6 +67,7 @@ cat > /root/3xui-credentials.txt <<CREDS
 Панель URL     : https://${DOMAIN}${PANEL_PATH}
 Логин          : ${PANEL_USER}
 Пароль         : ${PANEL_PASS}
+API Token      : ${_api_token:-(не получен)}
 Подписка       : https://${DOMAIN}${SUB_PATH}${CLIENT_SUB_ID}
 Selfsteal      : https://${DOMAIN}
 Сертификат     : ${_cert_path:-<каталог Caddy: ${CADDY_DATA_DIR}>}
@@ -72,8 +80,14 @@ chmod 600 /root/3xui-credentials.txt
 # Итог
 printf '\n  \033[2m─────────────────────────────────\033[0m\n' >&3
 printf '  \033[32m✓\033[0m  \033[1mГотово!\033[0m\n\n' >&3
-printf '  \033[1mПанель:\033[0m   https://%s%s\n' "$DOMAIN" "$PANEL_PATH" >&3
-printf '  \033[1mПодписка:\033[0m https://%s%s%s\n\n' "$DOMAIN" "$SUB_PATH" "$CLIENT_SUB_ID" >&3
-printf '  \033[2mЛог: %s\033[0m\n\n' "$FULL_LOGFILE" >&3
+printf '  \033[1mПанель:\033[0m    https://%s%s\n'   "$DOMAIN" "$PANEL_PATH" >&3
+printf '  \033[2mЛогин:\033[0m     %s\n'             "$PANEL_USER" >&3
+printf '  \033[2mПароль:\033[0m    %s\n'             "$PANEL_PASS" >&3
+if [[ -n "$_api_token" ]]; then
+    printf '  \033[2mAPI Token:\033[0m %s\n'         "$_api_token" >&3
+fi
+printf '\n'                                                         >&3
+printf '  \033[1mПодписка:\033[0m  https://%s%s%s\n' "$DOMAIN" "$SUB_PATH" "$CLIENT_SUB_ID" >&3
+printf '\n  \033[2mЛог: %s\033[0m\n\n' "$FULL_LOGFILE" >&3
 
 printf '%s\n' "DONE" >>"$LOGFILE"

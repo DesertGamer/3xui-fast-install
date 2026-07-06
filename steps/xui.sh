@@ -222,6 +222,8 @@ xui_db_set webCertFile        "$CADDY_CERT_FILE"
 xui_db_set webKeyFile         "$CADDY_KEY_FILE"
 xui_db_set subCertFile        "$CADDY_CERT_FILE"
 xui_db_set subKeyFile         "$CADDY_KEY_FILE"
+# Шаблон названия конфигурации в подписке — только имя инбаунда, без email клиента.
+xui_db_set remarkTemplate     "{{INBOUND}}"
 
 # ── VLESS Reality ────────────────────────────────────────────────────────────
 # В новой версии 3x-ui клиенты хранятся в отдельных таблицах clients/client_inbounds/client_traffics
@@ -280,61 +282,30 @@ sqlite3 "$XUI_DB" \
      VALUES (1,0,0,0,'${HY2_REMARK_SQL}',1,0,'${TRAFFIC_RESET}','',${HY2_PORT},'hysteria','${HYSTERIA2_SE_SQL}','${HYSTERIA2_SS_SQL}','in-${HY2_PORT}-udp','${HYSTERIA2_SN_SQL}');" \
     || die "Ошибка INSERT Hysteria2 inbound в БД"
 
-# ── Trojan-WS за 443 (через Caddy) ─────────────────────────────────────────────
-# Инбаунд слушает только localhost, транспорт ws, БЕЗ TLS: реальный TLS приходит на
-# 443 (VLESS Reality steal → Caddy на 9443), Caddy по секретному пути TROJAN_WS_PATH
-# проксирует апгрейд WebSocket сюда. Отдельный порт наружу не открывается.
-# externalProxy: инбаунд слушает localhost:TROJAN_PORT без TLS, но в подписке/ссылке
-# адрес должен быть публичным DOMAIN:443 с TLS (вход через Reality steal → Caddy).
-# forceTls:tls заставляет x-ui сгенерировать tls-ссылку; host в wsSettings даёт корректный
-# Host/SNI (Caddy v2 пробрасывает исходный Host на бэкенд, так что путь данных сходится).
-TROJAN_SETTINGS="{\"clients\":[]}"
-TROJAN_STREAM="{\"network\":\"ws\",\"security\":\"none\",\"externalProxy\":[{\"forceTls\":\"tls\",\"dest\":\"${DOMAIN}\",\"port\":${VLESS_PORT},\"remark\":\"\",\"sni\":\"${DOMAIN}\",\"fingerprint\":\"firefox\",\"alpn\":[\"h2\",\"http/1.1\"]}],\"wsSettings\":{\"acceptProxyProtocol\":false,\"path\":\"${TROJAN_WS_PATH}\",\"host\":\"${DOMAIN}\",\"headers\":{},\"heartbeatPeriod\":0}}"
-TROJAN_SNIFFING='{"enabled":true,"destOverride":["http","tls","quic","fakedns"],"metadataOnly":false,"routeOnly":false}'
-
-TROJAN_SE_SQL="${TROJAN_SETTINGS//\'/\'\'}"
-TROJAN_SS_SQL="${TROJAN_STREAM//\'/\'\'}"
-TROJAN_SN_SQL="${TROJAN_SNIFFING//\'/\'\'}"
-
-sqlite3 "$XUI_DB" \
-    "INSERT INTO inbounds (user_id,up,down,total,remark,enable,expiry_time,traffic_reset,listen,port,protocol,settings,stream_settings,tag,sniffing)
-     VALUES (1,0,0,0,'Trojan WS',1,0,'${TRAFFIC_RESET}','127.0.0.1',${TROJAN_PORT},'trojan','${TROJAN_SE_SQL}','${TROJAN_SS_SQL}','in-${TROJAN_PORT}-tcp','${TROJAN_SN_SQL}');" \
-    || die "Ошибка INSERT Trojan-WS inbound в БД"
-
-# ── Клиент (новая структура: clients + client_inbounds + client_traffics) ─────
+# ── Клиент ───────────────────────────────────────────────────────────────────
+CLIENT_EMAIL="moy-client"
 CLIENT_EMAIL_SQL=$(sql_escape "$CLIENT_EMAIL")
 CLIENT_UUID_SQL=$(sql_escape "$CLIENT_UUID")
 CLIENT_SUB_ID_SQL=$(sql_escape "$CLIENT_SUB_ID")
 CLIENT_HY2_AUTH_SQL=$(sql_escape "$CLIENT_HY2_AUTH")
-CLIENT_TROJAN_PASS_SQL=$(sql_escape "$CLIENT_TROJAN_PASS")
 NOW_MS=$(date +%s)000
 
-# Конфиг xray x-ui генерирует из таблиц clients/client_inbounds, а не из settings-JSON.
-# Поэтому пароль Trojan ОБЯЗАТЕЛЬНО в колонку clients.password (как uuid для VLESS и
-# auth для HY2) — иначе trojan-клиент стартует с пустым паролем и не работает, пока
-# инбаунд не пересохранят в админке.
 sqlite3 "$XUI_DB" \
     "INSERT INTO clients (email,sub_id,uuid,password,auth,flow,security,limit_ip,total_gb,expiry_time,enable,tg_id,group_name,comment,reset,created_at,updated_at)
-     VALUES ('${CLIENT_EMAIL_SQL}','${CLIENT_SUB_ID_SQL}','${CLIENT_UUID_SQL}','${CLIENT_TROJAN_PASS_SQL}','${CLIENT_HY2_AUTH_SQL}','','auto',0,0,0,1,0,'','',0,${NOW_MS},${NOW_MS});
+     VALUES ('${CLIENT_EMAIL_SQL}','${CLIENT_SUB_ID_SQL}','${CLIENT_UUID_SQL}','','${CLIENT_HY2_AUTH_SQL}','','auto',0,0,0,1,0,'','',0,${NOW_MS},${NOW_MS});
      INSERT INTO client_inbounds (client_id,inbound_id,flow_override,created_at)
      VALUES ((SELECT id FROM clients WHERE email='${CLIENT_EMAIL_SQL}'),(SELECT id FROM inbounds WHERE tag='in-${VLESS_PORT}-grpc'),'',${NOW_MS});
      INSERT INTO client_inbounds (client_id,inbound_id,flow_override,created_at)
      VALUES ((SELECT id FROM clients WHERE email='${CLIENT_EMAIL_SQL}'),(SELECT id FROM inbounds WHERE tag='in-${HY2_PORT}-udp'),'',${NOW_MS});
-     INSERT INTO client_inbounds (client_id,inbound_id,flow_override,created_at)
-     VALUES ((SELECT id FROM clients WHERE email='${CLIENT_EMAIL_SQL}'),(SELECT id FROM inbounds WHERE tag='in-${TROJAN_PORT}-tcp'),'',${NOW_MS});
      INSERT INTO client_traffics (inbound_id,enable,email,up,down,expiry_time,total,reset)
      VALUES ((SELECT id FROM inbounds WHERE tag='in-${VLESS_PORT}-grpc'),1,'${CLIENT_EMAIL_SQL}',0,0,0,0,0);" \
     || die "Ошибка INSERT клиента в БД"
 
-# ── Добавление клиента в settings инбаундов (3x-ui ищет клиентов в JSON) ─────
-# Один JSON клиента на все протоколы: VLESS читает id+flow, Hysteria2 — auth,
-# Trojan — password; лишние поля каждый протокол игнорирует.
-CLIENT_JSON="{\"id\":\"${CLIENT_UUID}\",\"auth\":\"${CLIENT_HY2_AUTH}\",\"flow\":\"\",\"security\":\"auto\",\"email\":\"${CLIENT_EMAIL}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":0,\"subId\":\"${CLIENT_SUB_ID}\",\"comment\":\"\",\"reset\":0,\"created_at\":${NOW_MS},\"updated_at\":${NOW_MS},\"password\":\"${CLIENT_TROJAN_PASS}\"}"
+CLIENT_JSON="{\"id\":\"${CLIENT_UUID}\",\"auth\":\"${CLIENT_HY2_AUTH}\",\"flow\":\"\",\"security\":\"auto\",\"email\":\"${CLIENT_EMAIL}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":0,\"subId\":\"${CLIENT_SUB_ID}\",\"comment\":\"\",\"reset\":0,\"created_at\":${NOW_MS},\"updated_at\":${NOW_MS},\"password\":\"\"}"
 CLIENT_JSON_SQL=$(sql_escape "$CLIENT_JSON")
 sqlite3 "$XUI_DB" \
     "UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${VLESS_PORT}-grpc';
-     UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${HY2_PORT}-udp';
-     UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${TROJAN_PORT}-tcp';" \
+     UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${HY2_PORT}-udp';" \
     || die "Ошибка обновления settings инбаундов с клиентом"
 
 # ── Хэш пароля (до старта сервиса) ──────────────────────────────────────────
@@ -352,6 +323,23 @@ PANEL_PASS_HASH_SQL=$(sql_escape "$PANEL_PASS_HASH")
 sqlite3 "$XUI_DB" \
     "UPDATE users SET username='${PANEL_USER_SQL}', password='${PANEL_PASS_HASH_SQL}' WHERE id=1;" \
     || die "Не удалось задать логин/пароль в БД."
+
+# ── API-токен для панели ─────────────────────────────────────────────────────
+# Plaintext: 48 символов из алфавита [0-9a-zA-Z] — идентично random.Seq(48) в 3x-ui.
+# В БД хранится SHA-256(plaintext) hex; plaintext показывается только здесь.
+API_TOKEN=$(openssl rand -base64 64 | tr -dc 'A-Za-z0-9' | head -c 48)
+[[ ${#API_TOKEN} -eq 48 ]] || die "Не удалось сгенерировать API-токен (openssl)."
+API_TOKEN_HASH=$(printf '%s' "$API_TOKEN" | sha256sum | awk '{print $1}')
+API_TOKEN_NOW=$(date +%s)
+API_TOKEN_NAME_SQL=$(sql_escape "installer")
+API_TOKEN_HASH_SQL=$(sql_escape "$API_TOKEN_HASH")
+sqlite3 "$XUI_DB" \
+    "INSERT OR IGNORE INTO api_tokens (name, token, enabled, created_at)
+     VALUES ('${API_TOKEN_NAME_SQL}','${API_TOKEN_HASH_SQL}',1,${API_TOKEN_NOW});" \
+    || die "Ошибка INSERT API-токена в БД."
+# Сохраняем plaintext для родительского setup.sh (export не работает через границу подпроцесса).
+printf '%s' "$API_TOKEN" > /root/.xui_api_token
+chmod 600 /root/.xui_api_token
 
 # ── Финальный старт ──────────────────────────────────────────────────────────
 systemctl start x-ui || die "Не удалось запустить сервис x-ui."
