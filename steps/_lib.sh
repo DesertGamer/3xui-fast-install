@@ -538,3 +538,72 @@ export DOMAIN
 
 # По умолчанию название подписки делаем доменом, если оно не задано явно.
 export SUB_TITLE="${SUB_TITLE:-${DOMAIN}}"
+
+# ── Локация: флаг + страна для названий инбаундов ─────────────────────────────
+# location_label <ISO-2> → "🇳🇱 Netherlands"
+location_label() {
+    local code="${1^^}"
+    case "$code" in
+        NL) printf '🇳🇱 Netherlands' ;;
+        DE) printf '🇩🇪 Germany' ;;
+        FI) printf '🇫🇮 Finland' ;;
+        FR) printf '🇫🇷 France' ;;
+        GB) printf '🇬🇧 United Kingdom' ;;
+        US) printf '🇺🇸 United States' ;;
+        CA) printf '🇨🇦 Canada' ;;
+        SE) printf '🇸🇪 Sweden' ;;
+        NO) printf '🇳🇴 Norway' ;;
+        CH) printf '🇨🇭 Switzerland' ;;
+        AT) printf '🇦🇹 Austria' ;;
+        PL) printf '🇵🇱 Poland' ;;
+        CZ) printf '🇨🇿 Czechia' ;;
+        HU) printf '🇭🇺 Hungary' ;;
+        RO) printf '🇷🇴 Romania' ;;
+        BG) printf '🇧🇬 Bulgaria' ;;
+        TR) printf '🇹🇷 Turkey' ;;
+        UA) printf '🇺🇦 Ukraine' ;;
+        LT) printf '🇱🇹 Lithuania' ;;
+        LV) printf '🇱🇻 Latvia' ;;
+        EE) printf '🇪🇪 Estonia' ;;
+        ES) printf '🇪🇸 Spain' ;;
+        PT) printf '🇵🇹 Portugal' ;;
+        IT) printf '🇮🇹 Italy' ;;
+        BE) printf '🇧🇪 Belgium' ;;
+        LU) printf '🇱🇺 Luxembourg' ;;
+        DK) printf '🇩🇰 Denmark' ;;
+        IS) printf '🇮🇸 Iceland' ;;
+        JP) printf '🇯🇵 Japan' ;;
+        SG) printf '🇸🇬 Singapore' ;;
+        HK) printf '🇭🇰 Hong Kong' ;;
+        AU) printf '🇦🇺 Australia' ;;
+        *)  printf '%s' "$code" ;;
+    esac
+}
+
+# Определяет ISO-2 код страны сервера через публичный API (ip-api.com, без ключа).
+# Результат: двухбуквенный код или пустая строка при ошибке.
+detect_country_code() {
+    local json code
+    if command_exists curl; then
+        json=$(curl -fsSL --retry 2 --connect-timeout 5 --max-time 10 \
+            "http://ip-api.com/json/?fields=countryCode" 2>/dev/null || true)
+        code=$(printf '%s' "$json" | grep -oE '"countryCode":"[A-Z]{2}"' | grep -oE '[A-Z]{2}' || true)
+        printf '%s' "$code"
+    fi
+}
+
+# Если LOCATION не задан явно — определяем по IP сервера.
+if [[ -z "${LOCATION:-}" ]]; then
+    _detected_cc=$(detect_country_code)
+    if [[ -n "$_detected_cc" ]]; then
+        LOCATION="$_detected_cc"
+    else
+        LOCATION="??"
+    fi
+    unset _detected_cc
+fi
+export LOCATION
+
+# LOCATION_LABEL — строка вида "🇳🇱 Netherlands", используется в remark инбаундов.
+LOCATION_LABEL=$(location_label "$LOCATION")
+export LOCATION_LABEL

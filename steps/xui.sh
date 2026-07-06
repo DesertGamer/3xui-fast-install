@@ -225,8 +225,8 @@ xui_db_set subKeyFile         "$CADDY_KEY_FILE"
 
 # ── VLESS Reality ────────────────────────────────────────────────────────────
 # В новой версии 3x-ui клиенты хранятся в отдельных таблицах clients/client_inbounds/client_traffics
-VLESS_REALITY_SETTINGS="{\"clients\":[],\"decryption\":\"none\",\"encryption\":\"none\",\"fallbacks\":[{\"dest\":9443,\"xver\":1}]}"
-VLESS_REALITY_STREAM="{\"network\":\"tcp\",\"security\":\"reality\",\"externalProxy\":[],\"realitySettings\":{${VLESS_REALITY_KEYS_SETTINGS}},\"tcpSettings\":{\"acceptProxyProtocol\":false,\"header\":{\"type\":\"none\"}}}"
+VLESS_REALITY_SETTINGS="{\"clients\":[],\"decryption\":\"none\",\"encryption\":\"none\",\"fallbacks\":[]}"
+VLESS_REALITY_STREAM="{\"network\":\"grpc\",\"security\":\"reality\",\"externalProxy\":[],\"realitySettings\":{${VLESS_REALITY_KEYS_SETTINGS}},\"grpcSettings\":{\"serviceName\":\"\",\"multiMode\":false,\"idle_timeout\":60,\"health_check_timeout\":20,\"permit_without_stream\":false,\"initial_windows_size\":0}}"
 VLESS_REALITY_SNIFFING='{"enabled":true,"destOverride":["http","tls","quic","fakedns"],"metadataOnly":false,"routeOnly":false}'
 
 VLESS_REALITY_SE_SQL="${VLESS_REALITY_SETTINGS//\'/\'\'}"
@@ -241,9 +241,12 @@ sqlite3 "$XUI_DB" \
      DELETE FROM inbounds;" \
     || die "Ошибка очистки клиентов и инбаундов в БД"
 
+VLESS_REMARK="${LOCATION_LABEL} | Vless"
+VLESS_REMARK_SQL=$(sql_escape "$VLESS_REMARK")
+
 sqlite3 "$XUI_DB" \
     "INSERT INTO inbounds (user_id,up,down,total,remark,enable,expiry_time,traffic_reset,listen,port,protocol,settings,stream_settings,tag,sniffing)
-     VALUES (1,0,0,0,'VLESS Reality',1,0,'${TRAFFIC_RESET}','',${VLESS_PORT},'vless','${VLESS_REALITY_SE_SQL}','${VLESS_REALITY_SS_SQL}','in-${VLESS_PORT}-tcp','${VLESS_REALITY_SN_SQL}');" \
+     VALUES (1,0,0,0,'${VLESS_REMARK_SQL}',1,0,'${TRAFFIC_RESET}','',${VLESS_PORT},'vless','${VLESS_REALITY_SE_SQL}','${VLESS_REALITY_SS_SQL}','in-${VLESS_PORT}-grpc','${VLESS_REALITY_SN_SQL}');" \
     || die "Ошибка INSERT VLESS Reality inbound в БД"
 
 # ── Hysteria2 ─────────────────────────────────────────────────────────────────
@@ -269,9 +272,12 @@ HYSTERIA2_SE_SQL="${HYSTERIA2_SETTINGS//\'/\'\'}"
 HYSTERIA2_SS_SQL="${HYSTERIA2_STREAM//\'/\'\'}"
 HYSTERIA2_SN_SQL="${HYSTERIA2_SNIFFING//\'/\'\'}"
 
+HY2_REMARK="${LOCATION_LABEL} | Hy2"
+HY2_REMARK_SQL=$(sql_escape "$HY2_REMARK")
+
 sqlite3 "$XUI_DB" \
     "INSERT INTO inbounds (user_id,up,down,total,remark,enable,expiry_time,traffic_reset,listen,port,protocol,settings,stream_settings,tag,sniffing)
-     VALUES (1,0,0,0,'Hy2',1,0,'${TRAFFIC_RESET}','',${HY2_PORT},'hysteria','${HYSTERIA2_SE_SQL}','${HYSTERIA2_SS_SQL}','in-${HY2_PORT}-udp','${HYSTERIA2_SN_SQL}');" \
+     VALUES (1,0,0,0,'${HY2_REMARK_SQL}',1,0,'${TRAFFIC_RESET}','',${HY2_PORT},'hysteria','${HYSTERIA2_SE_SQL}','${HYSTERIA2_SS_SQL}','in-${HY2_PORT}-udp','${HYSTERIA2_SN_SQL}');" \
     || die "Ошибка INSERT Hysteria2 inbound в БД"
 
 # ── Trojan-WS за 443 (через Caddy) ─────────────────────────────────────────────
@@ -309,24 +315,24 @@ NOW_MS=$(date +%s)000
 # инбаунд не пересохранят в админке.
 sqlite3 "$XUI_DB" \
     "INSERT INTO clients (email,sub_id,uuid,password,auth,flow,security,limit_ip,total_gb,expiry_time,enable,tg_id,group_name,comment,reset,created_at,updated_at)
-     VALUES ('${CLIENT_EMAIL_SQL}','${CLIENT_SUB_ID_SQL}','${CLIENT_UUID_SQL}','${CLIENT_TROJAN_PASS_SQL}','${CLIENT_HY2_AUTH_SQL}','xtls-rprx-vision','auto',0,0,0,1,0,'','',0,${NOW_MS},${NOW_MS});
+     VALUES ('${CLIENT_EMAIL_SQL}','${CLIENT_SUB_ID_SQL}','${CLIENT_UUID_SQL}','${CLIENT_TROJAN_PASS_SQL}','${CLIENT_HY2_AUTH_SQL}','','auto',0,0,0,1,0,'','',0,${NOW_MS},${NOW_MS});
      INSERT INTO client_inbounds (client_id,inbound_id,flow_override,created_at)
-     VALUES ((SELECT id FROM clients WHERE email='${CLIENT_EMAIL_SQL}'),(SELECT id FROM inbounds WHERE tag='in-${VLESS_PORT}-tcp'),'xtls-rprx-vision',${NOW_MS});
+     VALUES ((SELECT id FROM clients WHERE email='${CLIENT_EMAIL_SQL}'),(SELECT id FROM inbounds WHERE tag='in-${VLESS_PORT}-grpc'),'',${NOW_MS});
      INSERT INTO client_inbounds (client_id,inbound_id,flow_override,created_at)
      VALUES ((SELECT id FROM clients WHERE email='${CLIENT_EMAIL_SQL}'),(SELECT id FROM inbounds WHERE tag='in-${HY2_PORT}-udp'),'',${NOW_MS});
      INSERT INTO client_inbounds (client_id,inbound_id,flow_override,created_at)
      VALUES ((SELECT id FROM clients WHERE email='${CLIENT_EMAIL_SQL}'),(SELECT id FROM inbounds WHERE tag='in-${TROJAN_PORT}-tcp'),'',${NOW_MS});
      INSERT INTO client_traffics (inbound_id,enable,email,up,down,expiry_time,total,reset)
-     VALUES ((SELECT id FROM inbounds WHERE tag='in-${VLESS_PORT}-tcp'),1,'${CLIENT_EMAIL_SQL}',0,0,0,0,0);" \
+     VALUES ((SELECT id FROM inbounds WHERE tag='in-${VLESS_PORT}-grpc'),1,'${CLIENT_EMAIL_SQL}',0,0,0,0,0);" \
     || die "Ошибка INSERT клиента в БД"
 
 # ── Добавление клиента в settings инбаундов (3x-ui ищет клиентов в JSON) ─────
 # Один JSON клиента на все протоколы: VLESS читает id+flow, Hysteria2 — auth,
 # Trojan — password; лишние поля каждый протокол игнорирует.
-CLIENT_JSON="{\"id\":\"${CLIENT_UUID}\",\"auth\":\"${CLIENT_HY2_AUTH}\",\"flow\":\"xtls-rprx-vision\",\"security\":\"auto\",\"email\":\"${CLIENT_EMAIL}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":0,\"subId\":\"${CLIENT_SUB_ID}\",\"comment\":\"\",\"reset\":0,\"created_at\":${NOW_MS},\"updated_at\":${NOW_MS},\"password\":\"${CLIENT_TROJAN_PASS}\"}"
+CLIENT_JSON="{\"id\":\"${CLIENT_UUID}\",\"auth\":\"${CLIENT_HY2_AUTH}\",\"flow\":\"\",\"security\":\"auto\",\"email\":\"${CLIENT_EMAIL}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":0,\"subId\":\"${CLIENT_SUB_ID}\",\"comment\":\"\",\"reset\":0,\"created_at\":${NOW_MS},\"updated_at\":${NOW_MS},\"password\":\"${CLIENT_TROJAN_PASS}\"}"
 CLIENT_JSON_SQL=$(sql_escape "$CLIENT_JSON")
 sqlite3 "$XUI_DB" \
-    "UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${VLESS_PORT}-tcp';
+    "UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${VLESS_PORT}-grpc';
      UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${HY2_PORT}-udp';
      UPDATE inbounds SET settings=json_set(settings,'$.clients',json_array(json('${CLIENT_JSON_SQL}'))) WHERE tag='in-${TROJAN_PORT}-tcp';" \
     || die "Ошибка обновления settings инбаундов с клиентом"
