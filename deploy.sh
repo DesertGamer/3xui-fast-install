@@ -4,15 +4,21 @@
 #
 # Использование:
 #   bash deploy.sh <IP>
-#   bash deploy.sh <IP> -i ~/.ssh/id_rsa   # явно указать ключ
-#   SSH_PORT=2222 bash deploy.sh <IP>       # нестандартный порт
+#   bash deploy.sh <IP> -i ~/.ssh/id_rsa              # явно указать ключ
+#   SSH_PORT=2222 bash deploy.sh <IP>                 # нестандартный порт
 #   DOMAIN=vpn.example.com bash deploy.sh <IP>
+#
+# Cloudflare DNS (опционально):
+#   CF_API_TOKEN=xxx CF_ZONE_ID=xxx bash deploy.sh <IP>
+#   Автоматически создаёт/обновляет A-запись домена → IP и ждёт резолва.
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/local_lib.sh
 source "$SCRIPT_ROOT/scripts/local_lib.sh"
+# shellcheck source=scripts/cloudflare.sh
+source "$SCRIPT_ROOT/scripts/cloudflare.sh"
 
 # ─── Аргументы ────────────────────────────────────────────────────────────────
 SERVER_IP="${1:-}"
@@ -49,6 +55,11 @@ for var_name in "${REMOTE_ENV_VARS[@]}"; do
     remote_env_assignments+=("${var_name}=$(shell_quote "$var_value")")
 done
 remote_env_prefix="${remote_env_assignments[*]}"
+
+# ─── Cloudflare DNS (опционально) ────────────────────────────────────────────
+if [[ -n "${CF_API_TOKEN:-}" && -n "${CF_ZONE_ID:-}" ]]; then
+    cf_setup_dns "$DOMAIN" "$SERVER_IP"
+fi
 
 # ─── Ожидание SSH ─────────────────────────────────────────────────────────────
 info "Ожидаю SSH ${SSH_USER}@${SERVER_IP}:${SSH_PORT}..."
