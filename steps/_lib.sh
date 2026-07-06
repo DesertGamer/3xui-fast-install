@@ -432,6 +432,7 @@ export PANEL_PORT="${PANEL_PORT:-60000}"
 export PANEL_USER="${PANEL_USER:-admin}"
 export SUB_PORT="${SUB_PORT:-60001}"
 export SUB_TITLE="${SUB_TITLE:-}"
+export SUB_ANNOUNCE="${SUB_ANNOUNCE:-}"
 export SUB_PATH="${SUB_PATH:-/subs/}"
 
 export CLIENT_EMAIL="${CLIENT_EMAIL:-}"
@@ -509,8 +510,10 @@ if [[ -z "${DOMAIN:-}" ]]; then
 fi
 export DOMAIN
 
-# По умолчанию название подписки делаем доменом, если оно не задано явно.
-export SUB_TITLE="${SUB_TITLE:-${DOMAIN}}"
+# По умолчанию название и описание подписки, если не заданы явно.
+export SUB_TITLE="${SUB_TITLE:-DesertGamer VPN}"
+export SUB_ANNOUNCE="${SUB_ANNOUNCE:-Не работает VPN? Нажми 🔄 для обновления
+⚠️ Сервисы с названием Hy2 являются резервными. Используйте их, если у вас не работает Vless.}"
 
 # ── Локация: флаг + страна для названий инбаундов ─────────────────────────────
 # location_label <ISO-2> → "🇳🇱 Netherlands"
